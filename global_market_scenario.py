@@ -124,6 +124,47 @@ def twse_index_prices() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def regional_index_prices(symbol: str) -> pd.DataFrame:
+    """Non-Yahoo fallbacks for the Asian benchmark indexes."""
+    try:
+        if symbol == "^N225":
+            response = requests.get(
+                "https://indexes.nikkei.co.jp/nkave/historical/nikkei_stock_average_daily_en.csv",
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=20,
+            )
+            response.raise_for_status()
+            df = pd.read_csv(StringIO(response.text)).rename(columns={"Date of Data": "Date"})
+            df["Volume"] = 0
+            return df[["Date", "Open", "High", "Low", "Close", "Volume"]]
+        if symbol == "^KS11":
+            end = pd.Timestamp.now().strftime("%Y%m%d")
+            start = (pd.Timestamp.now() - pd.DateOffset(months=15)).strftime("%Y%m%d")
+            response = requests.get(
+                "https://api.finance.naver.com/siseJson.naver",
+                params={"symbol": "KOSPI", "requestType": 1, "startTime": start, "endTime": end, "timeframe": "day"},
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=20,
+            )
+            response.raise_for_status()
+            matches = re.findall(r'\["(\d{8})",\s*([-0-9.]+),\s*([-0-9.]+),\s*([-0-9.]+),\s*([-0-9.]+),\s*([-0-9.]+)', response.text)
+            return pd.DataFrame(matches, columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+        if symbol in {"000001.SS", "^HSI"}:
+            secid = "1.000001" if symbol == "000001.SS" else "100.HSI"
+            response = requests.get(
+                "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+                params={"secid": secid, "klt": 101, "fqt": 1, "beg": (pd.Timestamp.now()-pd.DateOffset(months=15)).strftime("%Y%m%d"),
+                        "end": "20500101", "lmt": 400, "ut": "7eea3edcaed734bea9cbfc24409ed989",
+                        "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"},
+                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}, timeout=25,
+            )
+            response.raise_for_status()
+            klines = response.json()["data"]["klines"]
+            rows = [line.split(",")[:6] for line in klines]
+            return pd.DataFrame(rows, columns=["Date", "Open", "Close", "High", "Low", "Volume"])
+    except (KeyError, TypeError, ValueError, requests.RequestException):
+        pass
+    return pd.DataFrame()
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def prices(symbol: str, period="2y") -> pd.DataFrame:
     # Prefer the crumb-free chart endpoint. yfinance's cookie handshake is
@@ -148,8 +189,8 @@ def prices(symbol: str, period="2y") -> pd.DataFrame:
                 break
         except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
             df = pd.DataFrame()
-    if df.empty and symbol == "^TWII":
-        df = twse_index_prices()
+    if df.empty:
+        df = twse_index_prices() if symbol == "^TWII" else regional_index_prices(symbol)
     if df.empty:
         df = yf.download(symbol, period=period, interval="1d", auto_adjust=False, progress=False, threads=False)
     if df.empty:
@@ -162,8 +203,10 @@ def prices(symbol: str, period="2y") -> pd.DataFrame:
     if not set(cols).issubset(df.columns):
         return pd.DataFrame()
     df = df[cols].dropna(subset=["Close"]).copy()
+    for column in ("Open", "High", "Low", "Close", "Volume"):
+        df[column] = pd.to_numeric(df[column], errors="coerce")
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.tz_localize(None)
-    return df.dropna(subset=["Date"]).sort_values("Date")
+    return df.dropna(subset=["Date", "Close"]).sort_values("Date")
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
