@@ -95,12 +95,36 @@ def num(value, default=np.nan):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def prices(symbol: str, period="2y") -> pd.DataFrame:
-    df = yf.download(symbol, period=period, interval="1d", auto_adjust=False, progress=False, threads=False)
+    # Prefer the crumb-free chart endpoint. yfinance's cookie handshake is
+    # frequently rate-limited on shared Streamlit Cloud IP addresses.
+    df = pd.DataFrame()
+    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+        try:
+            encoded = requests.utils.quote(symbol, safe="")
+            response = requests.get(
+                f"https://{host}/v8/finance/chart/{encoded}",
+                params={"range": period, "interval": "1d", "events": "history"},
+                headers={"User-Agent": "Mozilla/5.0 (market-dashboard/1.0)"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            result = response.json()["chart"]["result"][0]
+            quote = result["indicators"]["quote"][0]
+            df = pd.DataFrame({"Date": pd.to_datetime(result["timestamp"], unit="s", utc=True), **{
+                name: quote.get(name.lower(), []) for name in ("Open", "High", "Low", "Close", "Volume")
+            }})
+            if not df.empty:
+                break
+        except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
+            df = pd.DataFrame()
+    if df.empty:
+        df = yf.download(symbol, period=period, interval="1d", auto_adjust=False, progress=False, threads=False)
     if df.empty:
         return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    df = df.reset_index().rename(columns={"Datetime": "Date"})
+    if "Date" not in df.columns:
+        df = df.reset_index().rename(columns={"Datetime": "Date"})
     cols = ["Date", "Open", "High", "Low", "Close", "Volume"]
     if not set(cols).issubset(df.columns):
         return pd.DataFrame()
