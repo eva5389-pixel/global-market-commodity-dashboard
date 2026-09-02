@@ -64,6 +64,37 @@ def num(value, default=np.nan):
         return default
 
 
+def twse_index_prices() -> pd.DataFrame:
+    """Official TAIEX fallback when Yahoo throttles Streamlit Cloud."""
+    rows = []
+    month_start = pd.Timestamp.now().normalize().replace(day=1)
+    for offset in range(15):
+        month = month_start - pd.DateOffset(months=offset)
+        try:
+            response = requests.get(
+                "https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK",
+                params={"date": month.strftime("%Y%m01"), "response": "json"},
+                headers={"User-Agent": "Mozilla/5.0 (market-dashboard/1.0)"},
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            fields = payload.get("fields", [])
+            for values in payload.get("data", []):
+                record = dict(zip(fields, values))
+                roc_year, roc_month, roc_day = map(int, record["日期"].split("/"))
+                close = num(record.get("發行量加權股價指數"))
+                if pd.notna(close):
+                    rows.append({
+                        "Date": datetime(roc_year + 1911, roc_month, roc_day),
+                        "Open": close, "High": close, "Low": close, "Close": close,
+                        "Volume": num(record.get("成交股數"), 0),
+                    })
+        except (KeyError, TypeError, ValueError, requests.RequestException):
+            continue
+    return pd.DataFrame(rows)
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def prices(symbol: str, period="2y") -> pd.DataFrame:
     # The chart endpoint does not need yfinance's cookie/crumb handshake, which
@@ -88,6 +119,8 @@ def prices(symbol: str, period="2y") -> pd.DataFrame:
                 break
         except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
             df = pd.DataFrame()
+    if df.empty and symbol == "^TWII":
+        df = twse_index_prices()
     if df.empty:
         df = yf.download(symbol, period=period, interval="1d", auto_adjust=False, progress=False, threads=False)
     if df.empty:
