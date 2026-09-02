@@ -392,8 +392,12 @@ def taifex_positions():
     url="https://openapi.taifex.com.tw/v1/MarketDataOfMajorInstitutionalTradersDetailsOfFuturesContractsBytheDate"
     try:
         frame=pd.DataFrame(requests.get(url,timeout=20,headers={"User-Agent":"asia-market-template/1.0"}).json())
-        product=next(c for c in frame if "商品" in c or c.lower() in {"commodity","product"}); identity=next(c for c in frame if "身份" in c or "身分" in c or "identity" in c.lower())
-        oi=next(c for c in frame if "多空未平倉口數淨額" in c or "openinterest(net)" in c.lower().replace(" ","")); date_col=next((c for c in frame if "日期" in c or c.lower()=="date"),None)
+        product=next((c for c in frame if "商品" in c or c.lower() in {"commodity","product","contractcode"}),None)
+        identity=next((c for c in frame if "身份" in c or "身分" in c or c.lower() in {"identity","item"}),None)
+        oi=next((c for c in frame if "多空未平倉口數淨額" in c or c.lower().replace(" ","") in {"openinterest(net)","openinterestnet"}),None)
+        date_col=next((c for c in frame if "日期" in c or c.lower()=="date"),None)
+        if not all((product,identity,oi)):
+            return pd.DataFrame(),"期交所欄位格式已更新，暫時無法解析"
         tx=frame[frame[product].astype(str).str.contains("臺股期貨|台股期貨",regex=True,na=False)]
         return pd.DataFrame({"法人":tx[identity],"淨未平倉口數":tx[oi].map(num)}),str(tx[date_col].iloc[0]) if date_col and not tx.empty else "最新交易日"
     except Exception as exc: return pd.DataFrame(),f"期交所暫無回應：{type(exc).__name__}"
