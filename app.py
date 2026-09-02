@@ -8,7 +8,7 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 # 設定頁面配置 (寬螢幕模式)
@@ -50,11 +50,43 @@ if app_page in {"亞洲市場情境評估", "全球市場情境評估", "黃金�
 # ==========================================
 # 1. 數據運算引擎
 # ==========================================
+def direct_yahoo_history(symbol, period, interval):
+    """Crumb-free Yahoo chart fallback; always fail closed to an empty frame."""
+    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+        query = urlencode({"range": period, "interval": interval, "events": "history"})
+        request = Request(
+            f"https://{host}/v8/finance/chart/{quote(symbol, safe='')}?{query}",
+            headers={"User-Agent": "Mozilla/5.0 (market-dashboard/1.0)", "Accept": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            result = payload["chart"]["result"][0]
+            prices = result["indicators"]["quote"][0]
+            frame = pd.DataFrame({
+                "Date": pd.to_datetime(result["timestamp"], unit="s", utc=True).tz_localize(None),
+                "Open": prices.get("open", []), "High": prices.get("high", []),
+                "Low": prices.get("low", []), "Close": prices.get("close", []),
+                "Volume": prices.get("volume", []),
+            })
+            frame = frame.dropna(subset=["Date", "Close"])
+            if not frame.empty:
+                return frame
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+
 @st.cache_data(ttl=15)
 def get_full_analysis(symbol, period):
     interval = "1m" if period in ["1d", "5d"] else "1d"
-    
-    df = yf.download(symbol, period=period, interval=interval, progress=False)
+
+    try:
+        df = yf.download(symbol, period=period, interval=interval, progress=False)
+    except Exception:
+        df = pd.DataFrame()
+    if df.empty:
+        df = direct_yahoo_history(symbol, period, interval)
     if df.empty: return None, None
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     
@@ -256,8 +288,8 @@ if df is not None:
     curr = df.iloc[-1]
     prev_close = df.iloc[-2]["Close"] if len(df) > 1 else curr["Open"]
     
-    ticker_obj = yf.Ticker(ticker)
-    todays_data = ticker_obj.history(period="1d")
+    # Never let a transient Yahoo rate limit terminate the whole page.
+    todays_data = direct_yahoo_history(ticker, "1d", "1m")
     if not todays_data.empty:
         live_open = todays_data["Open"].iloc[-1]
         live_high = todays_data["High"].iloc[-1]
