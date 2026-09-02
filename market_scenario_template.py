@@ -451,6 +451,10 @@ def taiwan_derivatives_charts(spot: pd.DataFrame):
         st.info("臺指期歷史行情目前暫無回應。")
     else:
         spot_close = spot[["Date", "Close"]].rename(columns={"Close": "現貨價"}).sort_values("Date")
+        # pandas 3 requires identical datetime resolutions for merge_asof.
+        futures_history = futures_history.copy()
+        futures_history["Date"] = pd.to_datetime(futures_history["Date"]).astype("datetime64[ns]")
+        spot_close["Date"] = pd.to_datetime(spot_close["Date"]).astype("datetime64[ns]")
         basis = pd.merge_asof(
             futures_history.sort_values("Date"), spot_close, on="Date", direction="nearest", tolerance=pd.Timedelta("1D")
         ).dropna(subset=["現貨價"])
