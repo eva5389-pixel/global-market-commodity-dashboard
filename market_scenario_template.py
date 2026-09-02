@@ -399,6 +399,93 @@ def taifex_positions():
     except Exception as exc: return pd.DataFrame(),f"期交所暫無回應：{type(exc).__name__}"
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def taiwan_futures_history() -> pd.DataFrame:
+    """Recent regular-session TX front-month history for basis analysis."""
+    try:
+        response = requests.get(
+            "https://api.finmindtrade.com/api/v4/data",
+            params={"dataset": "TaiwanFuturesDaily", "data_id": "TX", "start_date": (date.today()-timedelta(days=120)).isoformat()},
+            headers={"User-Agent": "market-dashboard/1.0"}, timeout=30,
+        )
+        response.raise_for_status()
+        frame = pd.DataFrame(response.json().get("data", []))
+        if frame.empty: return frame
+        frame = frame[
+            frame["trading_session"].eq("position")
+            & frame["contract_date"].astype(str).str.fullmatch(r"\d{6}")
+        ].copy()
+        frame["Date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame["期貨價"] = pd.to_numeric(frame["close"], errors="coerce")
+        frame["成交量"] = pd.to_numeric(frame["volume"], errors="coerce")
+        # The most actively traded outright contract is the practical front-month proxy.
+        frame = frame.sort_values(["Date", "成交量"], ascending=[True, False]).drop_duplicates("Date")
+        return frame[["Date", "期貨價", "成交量", "contract_date"]].dropna(subset=["Date", "期貨價"])
+    except (KeyError, TypeError, ValueError, requests.RequestException):
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def taifex_put_call_history() -> pd.DataFrame:
+    """Official TXO Put/Call volume and open-interest ratios."""
+    try:
+        response = requests.get(
+            "https://openapi.taifex.com.tw/v1/PutCallRatio",
+            headers={"User-Agent": "market-dashboard/1.0"}, timeout=25,
+        )
+        response.raise_for_status()
+        frame = pd.DataFrame(response.json())
+        frame["Date"] = pd.to_datetime(frame["Date"], format="%Y%m%d", errors="coerce")
+        rename = {"PutCallVolumeRatio%": "成交量P/C比%", "PutCallOIRatio%": "未平倉P/C比%"}
+        frame = frame.rename(columns=rename)
+        for column in ("成交量P/C比%", "未平倉P/C比%", "PutVolume", "CallVolume", "PutOI", "CallOI"):
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        return frame.dropna(subset=["Date"]).sort_values("Date").tail(90)
+    except (KeyError, TypeError, ValueError, requests.RequestException):
+        return pd.DataFrame()
+
+
+def taiwan_derivatives_charts(spot: pd.DataFrame):
+    futures_history = taiwan_futures_history()
+    if futures_history.empty:
+        st.info("臺指期歷史行情目前暫無回應。")
+    else:
+        spot_close = spot[["Date", "Close"]].rename(columns={"Close": "現貨價"}).sort_values("Date")
+        basis = pd.merge_asof(
+            futures_history.sort_values("Date"), spot_close, on="Date", direction="nearest", tolerance=pd.Timedelta("1D")
+        ).dropna(subset=["現貨價"])
+        basis["期現貨價差"] = basis["期貨價"] - basis["現貨價"]
+        basis["價差率%"] = basis["期現貨價差"] / basis["現貨價"] * 100
+        basis_chart = alt.Chart(basis.tail(60)).mark_bar().encode(
+            x=alt.X("Date:T", title="日期"), y=alt.Y("期現貨價差:Q", title="臺指期－加權指數（點）"),
+            color=alt.condition(alt.datum["期現貨價差"] >= 0, alt.value("#ef5350"), alt.value("#26a69a")),
+            tooltip=[alt.Tooltip("Date:T", title="日期"), alt.Tooltip("期貨價:Q", format=",.2f"),
+                     alt.Tooltip("現貨價:Q", format=",.2f"), alt.Tooltip("期現貨價差:Q", format="+.2f"),
+                     alt.Tooltip("價差率%:Q", format="+.2f"), "contract_date:N"],
+        ).properties(height=320, title="臺指期近月－臺灣加權指數期現貨價差")
+        st.altair_chart(basis_chart, width="stretch")
+        if not basis.empty:
+            latest = basis.iloc[-1]
+            state = "正價差" if latest["期現貨價差"] >= 0 else "逆價差"
+            st.caption(f"最新 {state} {latest['期現貨價差']:+,.2f} 點（{latest['價差率%']:+.2f}%）；期貨採日盤成交量最大之月契約。")
+
+    option_history = taifex_put_call_history()
+    if option_history.empty:
+        st.info("臺指選擇權 Put/Call 資料目前暫無回應。")
+    else:
+        ratios = option_history.melt(
+            id_vars="Date", value_vars=["成交量P/C比%", "未平倉P/C比%"], var_name="指標", value_name="比率%"
+        )
+        option_chart = alt.Chart(ratios).mark_line(point=True).encode(
+            x=alt.X("Date:T", title="日期"), y=alt.Y("比率%:Q", title="Put/Call 比率（%）", scale=alt.Scale(zero=False)),
+            color=alt.Color("指標:N", title=None),
+            tooltip=[alt.Tooltip("Date:T", title="日期"), "指標:N", alt.Tooltip("比率%:Q", format=".2f")],
+        ).properties(height=320, title="臺指選擇權 Put/Call 比率")
+        st.altair_chart(option_chart, width="stretch")
+        latest = option_history.iloc[-1]
+        st.caption(f"最新成交量 P/C 比 {latest['成交量P/C比%']:.2f}%；未平倉量 P/C 比 {latest['未平倉P/C比%']:.2f}%。資料來源：TAIFEX OpenAPI。")
+
+
 def macro_score(market, macro):
     if macro is None or macro.empty or not {"市場","指標","數值"}.issubset(macro.columns):
         return 50.0
@@ -654,6 +741,10 @@ with tabs[1]:
         st.caption(f"支撐／壓力採近60日低高價10%／90%分位；ATR14={s['atr']:,.2f}。換手強度={s['換手強度']:.2f}倍、20日振幅={s['20日振幅%']:.2f}%。")
         overview=pd.DataFrame([{"市場":m,"價量判讀":v.get("價量判讀"),"KD判讀":v.get("KD判讀"),"MACD判讀":v.get("MACD判讀"),"階段判讀":v.get("階段判讀"),"籌碼判讀":v.get("籌碼判讀"),"換手強度":v.get("換手強度"),"技術分":v.get("technical")} for m,v in index_data.items() if "error" not in v])
         st.subheader("五市場技術線判讀"); st.dataframe(overview,hide_index=True,use_container_width=True)
+        if technical_market == "台灣":
+            st.divider()
+            st.subheader("臺灣期貨與選擇權觀察")
+            taiwan_derivatives_charts(s["df"])
 
 with tabs[2]:
     st.subheader("美元、原油、利率與風險情緒")
