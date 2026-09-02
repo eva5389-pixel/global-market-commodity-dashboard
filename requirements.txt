@@ -2,7 +2,9 @@ streamlit
 pandas
 numpy
 plotly
-yfinance
+# 1.7.0 returns empty frames for the Asian index symbols used by the
+# scenario dashboards on Streamlit Cloud. Keep the last verified release.
+yfinance==1.6.0
 altair
 requests
 lxml

@@ -155,8 +155,9 @@ def analyze(symbol: str) -> dict:
     score += 7 if last.MACD_HIST > 0 else -7; score += 5 if 45 <= last.RSI14 <= 70 else -5 if last.RSI14 >= 78 else 0
     score += np.clip(ret(df, 21), -10, 10) + np.clip(flow * 10, -8, 8)
     diagnosis=technical_diagnosis(df)
+    volume_ratio = last.Volume / last.VOL_MA20 if pd.notna(last.VOL_MA20) and last.VOL_MA20 else np.nan
     return {"symbol": symbol, "df": df, "date": last.Date.date().isoformat(), "close": last.Close, "day": ret(df, 1), "m1": ret(df, 21), "m3": ret(df, 63),
-            "volume_ratio": last.Volume / last.VOL_MA20, "rsi": last.RSI14, "atr": last.ATR14, "support": recent.Low.quantile(.1), "resistance": recent.High.quantile(.9),
+            "volume_ratio": volume_ratio, "rsi": last.RSI14, "atr": last.ATR14, "support": recent.Low.quantile(.1), "resistance": recent.High.quantile(.9),
             "flow": flow, "technical": float(np.clip(score, 0, 100)),"k":last.K,"d":last.D,"macd_hist":last.MACD_HIST,**diagnosis}
 
 
