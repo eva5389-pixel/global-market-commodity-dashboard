@@ -55,6 +55,17 @@ VOLATILITY_SOURCES = {
     "中國":{"name":"上證選擇權／上證指數波動率代理","url":"https://www.sse.com.cn/home/wechat/stockOption/stockOptionPage/"},
 }
 
+# Optical-communications fund watchlist. Holdings are limited to securities in
+# the user-provided 光_export.csv and each security is counted only once.
+OPTICAL_FUND_WATCHLIST = [
+    {"基金":"野村台灣運籌基金","相關持股%":13.42,"實際持股":"旺矽 5.48%、聯亞 3.22%、華星光 2.92%、光聖 1.80%","持股期別":"2026/03","持股／績效連結":"https://tfccbank.moneydj.com/w/wr/wr04_ACKH03.djhtm"},
+    {"基金":"富邦日盛基金","相關持股%":10.04,"實際持股":"光聖 4.11%、旺矽 3.95%、華星光 1.98%","持股期別":"2026/06","持股／績效連結":"https://invest2.hontai.com.tw/w/wr/wr04_ACJS01.djhtm"},
+    {"基金":"群益店頭市場基金","相關持股%":10.27,"實際持股":"旺矽 7.99%、華星光 2.28%","持股期別":"公開說明書最新揭露","持股／績效連結":"https://www.moneydj.com/"},
+    {"基金":"安聯台灣科技基金","相關持股%":7.61,"實際持股":"旺矽 7.61%","持股期別":"2026/07","持股／績效連結":"https://mmafund.sinopac.com/w/wr/wr04.djhtm?a=ACDD04-TT3"},
+    {"基金":"第一金電子基金","相關持股%":5.60,"實際持股":"旺矽 5.60%","持股期別":"2026/07","持股／績效連結":"https://newfund.tw.dbs.com/mobile/a4.aspx?a=ACNC16"},
+    {"基金":"玉山中小型股基金","相關持股%":4.56,"實際持股":"旺矽 2.04%、華星光 1.30%、聯亞 1.22%","持股期別":"2026/06","持股／績效連結":"https://sunnybank.moneydj.com/w/wr/wr04_ACML09-5810.djhtm"},
+]
+
 
 def num(value, default=np.nan):
     try:
@@ -825,6 +836,17 @@ with tabs[5]:
             score=np.clip(s["technical"]+bias+stock*.25+semi_adj+sector_export,0,100)
             rows.append({"市場":market,"產業":sector,"代理ETF":symbol,"1M%":s["m1"],"3M%":s["m3"],"技術分":s["technical"],"出口因子分":sector_export,"去估值調整分":semi_adj,"去估值壓力":semi_pressure,"情境分":score,"結論":verdict(score)})
     sector_frame=pd.DataFrame(rows); st.dataframe(sector_frame.sort_values("情境分",ascending=False),hide_index=True,use_container_width=True) if not sector_frame.empty else st.info("產業ETF行情暫無資料。")
+    st.subheader("光通訊｜基金觀察名單")
+    st.dataframe(
+        pd.DataFrame(OPTICAL_FUND_WATCHLIST).sort_values("相關持股%",ascending=False),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "相關持股%":st.column_config.NumberColumn("相關持股%",format="%.2f%%"),
+            "持股／績效連結":st.column_config.LinkColumn("持股／績效連結",display_text="查看 MoneyDJ ↗"),
+        },
+    )
+    st.caption("僅加總光_export.csv 內的光通訊股票；同一基金、同一股票只計一次，不混合不同月份，因此相關持股不會因重複分類超過100%。")
 
 with tabs[6]:
     st.markdown("""### 評分框架
