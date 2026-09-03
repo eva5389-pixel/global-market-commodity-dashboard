@@ -80,4 +80,119 @@ def render_twd_observer(us_yield: float, usd_month_change: float, foreign_flow: 
         column_config={"台幣方向分": st.column_config.NumberColumn(format="%+.2f")},
         width="stretch",
     )
-    st.caption("自動帶入：美國10年債殖利率、美元指數近1月變動、台灣三大法人合計。M1B、M2、出口、外銷訂單、韓國出口與央行態度採手動更新，避免發布頻率不同造成誤判。")
+    st.caption("自動帶入：美國10年債殖利率、美元指數近1月變動、外資台股買賣超。M1B、M2、出口、外銷訂單、韓國出口與央行態度採手動更新，避免發布頻率不同造成誤判。")
+
+
+def _render_result(currency: str, quote_note: str, rows: list[tuple[str, float, str]]) -> None:
+    detail = pd.DataFrame(rows, columns=["因子", "方向分", "目前狀態"])
+    detail["方向"] = np.where(detail["方向分"] >= 0, f"支持{currency}升值", f"造成{currency}貶值壓力")
+    score = float(detail["方向分"].sum())
+    label = f"{currency}偏強" if score >= 5 else f"{currency}偏弱" if score <= -5 else "區間震盪"
+    st.metric(f"{currency}方向分", f"{score:+.1f}", label, border=True)
+    st.info(f"模型結論：**{label}**。{quote_note}")
+    st.bar_chart(detail, x="因子", y="方向分", color="方向", horizontal=True)
+    st.dataframe(
+        detail, hide_index=True, width="stretch",
+        column_config={"方向分": st.column_config.NumberColumn(format="%+.2f")},
+    )
+
+
+def render_usd_observer(usd_month_change: float) -> None:
+    st.subheader("美元匯率觀察")
+    st.caption("衡量美元整體強弱；正分代表美元偏強。")
+    with st.form("usd_fx_observer"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            fed = st.selectbox("Fed態度", list(STANCE_SCORE), index=1, key="usd_fed")
+            dxy = st.number_input("美元指數近1月變動 %", value=float(round(usd_month_change, 2)), step=0.1, key="usd_dxy")
+        with c2:
+            growth_gap = st.number_input("美國相對其他國家成長差 %", value=0.5, step=0.1)
+            inflation_gap = st.number_input("美國通膨相對目標差 %", value=0.5, step=0.1)
+        with c3:
+            risk = st.slider("全球避險程度", 0, 100, 50)
+            twin_deficit = st.number_input("美國財政＋經常帳赤字壓力（0–10）", 0.0, 10.0, 5.0, 0.5)
+        st.form_submit_button("更新美元判讀", type="primary", width="stretch")
+    rows = [
+        ("Fed態度", STANCE_SCORE[fed], fed),
+        ("美元既有動能", np.clip(dxy * 0.8, -5, 5), f"{dxy:+.2f}%"),
+        ("美國成長優勢", np.clip(growth_gap * 1.5, -4, 4), f"{growth_gap:+.2f}%"),
+        ("通膨／高利率預期", np.clip(inflation_gap * 1.2, -3, 3), f"{inflation_gap:+.2f}%"),
+        ("避險需求", np.clip((risk - 50) / 10, -5, 5), f"{risk}/100"),
+        ("雙赤字壓力", -np.clip(twin_deficit * 0.45, 0, 4.5), f"{twin_deficit:.1f}/10"),
+    ]
+    _render_result("美元", "美元偏強通常使非美貨幣承壓。", rows)
+
+
+def render_jpy_observer(us_yield: float, usd_month_change: float) -> None:
+    st.subheader("日圓匯率觀察")
+    st.caption("正分代表日圓升值；USD/JPY 通常反向下跌。")
+    with st.form("jpy_fx_observer"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            jp_rate = st.number_input("日本利率 %", value=0.75, step=0.05)
+            us_rate = st.number_input("美國利率／10年債殖利率 %", value=float(round(us_yield, 2)), step=0.05, key="jpy_us")
+        with c2:
+            boj = st.selectbox("日本央行態度", list(STANCE_SCORE), index=1)
+            wages = st.number_input("日本實質薪資年增率 %", value=0.0, step=0.1)
+            inflation = st.number_input("日本核心通膨 %", value=2.0, step=0.1)
+        with c3:
+            risk = st.slider("全球避險程度", 0, 100, 50, key="jpy_risk")
+            oil = st.number_input("油價近1月變動 %", value=0.0, step=0.5)
+            dxy = st.number_input("美元指數近1月變動 %", value=float(round(usd_month_change, 2)), step=0.1, key="jpy_dxy")
+        st.form_submit_button("更新日圓判讀", type="primary", width="stretch")
+    gap = us_rate - jp_rate
+    rows = [
+        ("美日利差", -np.clip((gap - 2.0) * 2.0, -7, 7), f"{gap:+.2f} 個百分點"),
+        ("日本央行態度", STANCE_SCORE[boj], boj),
+        ("實質薪資", np.clip(wages * 0.8, -3, 3), f"{wages:+.2f}%"),
+        ("通膨正常化", np.clip((inflation - 2.0) * 0.8, -2, 2), f"{inflation:.2f}%"),
+        ("避險需求", np.clip((risk - 50) / 15, -3.3, 3.3), f"{risk}/100"),
+        ("能源進口成本", -np.clip(oil * 0.25, -3, 3), f"{oil:+.2f}%"),
+        ("美元壓力", -np.clip(dxy * 0.5, -4, 4), f"{dxy:+.2f}%"),
+    ]
+    _render_result("日圓", "日圓偏強＝USD/JPY偏向下行；日圓偏弱＝USD/JPY偏向上行。", rows)
+
+
+def render_cny_observer(us_yield: float, usd_month_change: float) -> None:
+    st.subheader("人民幣匯率觀察")
+    st.caption("正分代表人民幣升值；USD/CNY與USD/CNH通常反向下跌。")
+    with st.form("cny_fx_observer"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            cn_rate = st.number_input("中國政策利率代理 %", value=1.40, step=0.05)
+            us_rate = st.number_input("美國利率／10年債殖利率 %", value=float(round(us_yield, 2)), step=0.05, key="cny_us")
+            pboc = st.selectbox("中國人民銀行態度", list(STANCE_SCORE), index=1)
+        with c2:
+            exports = st.number_input("中國出口年增率 %", value=5.0, step=0.5)
+            pmi = st.number_input("中國製造業 PMI", value=50.0, step=0.1)
+            property_pressure = st.slider("房地產／信用壓力", 0, 100, 50)
+        with c3:
+            capital_flow = st.number_input("資本流入強度（-10至10）", -10.0, 10.0, 0.0, 0.5)
+            fixing_support = st.number_input("央行中間價支撐（0–10）", 0.0, 10.0, 5.0, 0.5)
+            dxy = st.number_input("美元指數近1月變動 %", value=float(round(usd_month_change, 2)), step=0.1, key="cny_dxy")
+        st.form_submit_button("更新人民幣判讀", type="primary", width="stretch")
+    gap = us_rate - cn_rate
+    rows = [
+        ("中美利差", -np.clip((gap - 1.0) * 1.8, -7, 7), f"{gap:+.2f} 個百分點"),
+        ("人行態度", STANCE_SCORE[pboc], pboc),
+        ("出口結匯", np.clip(exports * 0.3, -4, 4), f"{exports:+.2f}%"),
+        ("製造業景氣", np.clip((pmi - 50) * 0.8, -4, 4), f"{pmi:.1f}"),
+        ("房地產／信用壓力", -np.clip((property_pressure - 30) / 14, -2, 5), f"{property_pressure}/100"),
+        ("跨境資本流", np.clip(capital_flow * 0.5, -5, 5), f"{capital_flow:+.1f}/10"),
+        ("中間價支撐", np.clip(fixing_support * 0.4, 0, 4), f"{fixing_support:.1f}/10"),
+        ("美元壓力", -np.clip(dxy * 0.6, -4, 4), f"{dxy:+.2f}%"),
+    ]
+    _render_result("人民幣", "人民幣偏強＝USD/CNY偏向下行；離岸CNH通常波動較大。", rows)
+
+
+def render_fx_observers(us_yield: float, usd_month_change: float, foreign_flow: float) -> None:
+    st.header("主要匯率觀察")
+    twd_tab, usd_tab, jpy_tab, cny_tab = st.tabs(["🇹🇼 台幣", "🇺🇸 美元", "🇯🇵 日圓", "🇨🇳 人民幣"])
+    with twd_tab:
+        render_twd_observer(us_yield, usd_month_change, foreign_flow)
+    with usd_tab:
+        render_usd_observer(usd_month_change)
+    with jpy_tab:
+        render_jpy_observer(us_yield, usd_month_change)
+    with cny_tab:
+        render_cny_observer(us_yield, usd_month_change)
