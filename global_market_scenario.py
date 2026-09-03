@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import html
+import time
 from datetime import date, datetime, timedelta
 from io import BytesIO, StringIO
 from urllib.parse import urlencode
@@ -182,24 +183,32 @@ def prices(symbol: str, period="2y") -> pd.DataFrame:
     # frequently rate-limited on shared Streamlit Cloud IP addresses.
     df = pd.DataFrame()
     for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
-        try:
-            encoded = requests.utils.quote(symbol, safe="")
-            response = requests.get(
-                f"https://{host}/v8/finance/chart/{encoded}",
-                params={"range": period, "interval": "1d", "events": "history"},
-                headers={"User-Agent": "Mozilla/5.0 (market-dashboard/1.0)"},
-                timeout=20,
-            )
-            response.raise_for_status()
-            result = response.json()["chart"]["result"][0]
-            quote = result["indicators"]["quote"][0]
-            df = pd.DataFrame({"Date": pd.to_datetime(result["timestamp"], unit="s", utc=True), **{
-                name: quote.get(name.lower(), []) for name in ("Open", "High", "Low", "Close", "Volume")
-            }})
-            if not df.empty:
-                break
-        except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
-            df = pd.DataFrame()
+        for attempt in range(2):
+            try:
+                # Shared Streamlit Cloud IPs are throttled when all market
+                # symbols are requested in a burst. Pace calls and retry 429.
+                time.sleep(0.18 if attempt == 0 else 1.0)
+                encoded = requests.utils.quote(symbol, safe="")
+                response = requests.get(
+                    f"https://{host}/v8/finance/chart/{encoded}",
+                    params={"range": period, "interval": "1d", "events": "history"},
+                    headers={"User-Agent": "Mozilla/5.0 (market-dashboard/1.0)"},
+                    timeout=20,
+                )
+                if response.status_code == 429:
+                    continue
+                response.raise_for_status()
+                result = response.json()["chart"]["result"][0]
+                quote = result["indicators"]["quote"][0]
+                df = pd.DataFrame({"Date": pd.to_datetime(result["timestamp"], unit="s", utc=True), **{
+                    name: quote.get(name.lower(), []) for name in ("Open", "High", "Low", "Close", "Volume")
+                }})
+                if not df.empty:
+                    break
+            except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
+                df = pd.DataFrame()
+        if not df.empty:
+            break
     # Yahoo can return a non-empty but one-session-stale TAIEX series.  Always
     # merge the official TWSE close into Taiwan data instead of treating TWSE
     # merely as an all-or-nothing fallback.  Official rows are appended last,
@@ -415,7 +424,8 @@ def analyze(symbol: str) -> dict:
     flow = (df["Close"].pct_change() * df["Volume"]).tail(20).sum() / (df["Volume"].tail(20).sum() or np.nan) * 100
     score = 50 + (7 if last.Close > last.MA20 else -7) + (9 if last.Close > last.MA60 else -9) + (12 if last.Close > last.MA200 else -12)
     score += 7 if last.MACD_HIST > 0 else -7; score += 5 if 45 <= last.RSI14 <= 70 else -5 if last.RSI14 >= 78 else 0
-    score += np.clip(ret(df, 21), -10, 10) + np.clip(flow * 10, -8, 8)
+    flow_score = 0.0 if pd.isna(flow) else float(np.clip(flow * 10, -8, 8))
+    score += np.clip(ret(df, 21), -10, 10) + flow_score
     diagnosis=technical_diagnosis(df)
     volume_ratio=last.Volume/last.VOL_MA20 if pd.notna(last.VOL_MA20) and last.VOL_MA20 else np.nan
     return {"symbol": symbol, "df": df, "date": last.Date.date().isoformat(), "close": last.Close, "day": ret(df, 1), "m1": ret(df, 21), "m3": ret(df, 63),
