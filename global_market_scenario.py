@@ -198,8 +198,24 @@ def prices(symbol: str, period="2y") -> pd.DataFrame:
                 break
         except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
             df = pd.DataFrame()
-    if df.empty:
-        df = twse_index_prices() if symbol == "^TWII" else regional_index_prices(symbol)
+    # Yahoo can return a non-empty but one-session-stale TAIEX series.  Always
+    # merge the official TWSE close into Taiwan data instead of treating TWSE
+    # merely as an all-or-nothing fallback.  Official rows are appended last,
+    # so they win when both sources contain the same trading date.
+    if symbol == "^TWII":
+        official = twse_index_prices()
+        if not official.empty:
+            if df.empty:
+                df = official
+            else:
+                df = df.copy()
+                df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True).dt.tz_localize(None).dt.normalize()
+                official = official.copy()
+                official["Date"] = pd.to_datetime(official["Date"], errors="coerce").dt.normalize()
+                df = pd.concat([df, official], ignore_index=True)
+                df = df.drop_duplicates(subset=["Date"], keep="last")
+    elif df.empty:
+        df = regional_index_prices(symbol)
     if df.empty:
         df = yf.download(symbol, period=period, interval="1d", auto_adjust=False, progress=False, threads=False)
     if df.empty:

@@ -171,8 +171,23 @@ def prices(symbol: str, period="2y") -> pd.DataFrame:
                 break
         except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
             df = pd.DataFrame()
-    if df.empty:
-        df = twse_index_prices() if symbol == "^TWII" else regional_index_prices(symbol)
+    # Yahoo may have a valid-looking TAIEX frame whose newest session is stale.
+    # Merge TWSE official closes every time and let the official row win for a
+    # duplicated trading date.
+    if symbol == "^TWII":
+        official = twse_index_prices()
+        if not official.empty:
+            if df.empty:
+                df = official
+            else:
+                df = df.copy()
+                df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True).dt.tz_localize(None).dt.normalize()
+                official = official.copy()
+                official["Date"] = pd.to_datetime(official["Date"], errors="coerce").dt.normalize()
+                df = pd.concat([df, official], ignore_index=True)
+                df = df.drop_duplicates(subset=["Date"], keep="last")
+    elif df.empty:
+        df = regional_index_prices(symbol)
     if df.empty:
         df = yf.download(symbol, period=period, interval="1d", auto_adjust=False, progress=False, threads=False)
     if df.empty:
