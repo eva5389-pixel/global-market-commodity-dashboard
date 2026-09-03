@@ -18,6 +18,8 @@ import requests
 import streamlit as st
 import yfinance as yf
 
+from fx_observer import render_twd_observer
+
 st.set_page_config(page_title="亞洲市場情境評估", page_icon="🌏", layout="wide")
 
 MARKETS = {
@@ -704,7 +706,7 @@ official_vol=official_market_volatility(); market_volatility={
     "中國":realized_volatility_proxy(index_data["中國"],"上證指數20D實現波動率","上證選擇權頁；歷史API失效時代理"),
 }
 cash,cash_date=twse_flow(); futures,futures_date=taifex_positions()
-tabs=st.tabs(["🏁 市場結論","📈 價量技術","🌍 全球因子","💧 資金流／法人","🌐 IMF總經","🏭 產業評估","🧮 方法"])
+tabs=st.tabs(["🏁 市場結論","📈 價量技術","🌍 全球因子","💧 資金流／法人","🌐 IMF總經","🏭 產業評估","🧮 方法","💱 台幣匯率"])
 
 with tabs[0]:
     rows=[]; cash_total=cash["買賣超億元"].sum() if not cash.empty else 0; foreign_oi=futures.loc[futures["法人"].astype(str).str.contains("外資"),"淨未平倉口數"].sum() if not futures.empty else 0
@@ -881,5 +883,12 @@ with tabs[6]:
 
 本模板僅供研究，不構成投資建議。ETF量價代理不是實際基金流量。""")
     st.markdown("[IMF API](https://www.imf.org/external/datamapper/api/)｜[StockQ全球經濟數據](https://www.stockq.org/economy/worldstats.php)｜[TWSE](https://www.twse.com.tw/zh/trading/foreign/t86.html)｜[TAIFEX](https://www.taifex.com.tw/cht/3/futContractsDate)｜[TAIFEX OpenAPI](https://openapi.taifex.com.tw/)")
+
+with tabs[7]:
+    us_yield = factor_data.get("美國10年債殖利率", {}).get("close", 4.0)
+    usd_month_change = factor_data.get("美元指數", {}).get("m1", 0.0)
+    foreign_rows = cash.loc[cash["法人"].astype(str).str.contains("外資", na=False)] if not cash.empty else pd.DataFrame()
+    foreign_flow = foreign_rows["買賣超億元"].sum() if not foreign_rows.empty else 0.0
+    render_twd_observer(us_yield, usd_month_change, foreign_flow)
 
 st.caption(f"產生時間：{datetime.now():%Y-%m-%d %H:%M:%S}｜行情與法人快取30分鐘、IMF快取6小時")
