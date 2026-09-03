@@ -245,6 +245,41 @@ def prices(symbol: str, period="2y") -> pd.DataFrame:
     return df.dropna(subset=["Date", "Close"]).sort_values("Date")
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def batch_prices(symbols: tuple[str, ...], period: str = "2y") -> dict[str, pd.DataFrame]:
+    """Fetch a symbol group in one Yahoo Spark request to avoid per-IP bursts."""
+    output: dict[str, pd.DataFrame] = {}
+    try:
+        response = requests.get(
+            "https://query1.finance.yahoo.com/v7/finance/spark",
+            params={"symbols": ",".join(symbols), "range": period, "interval": "1d"},
+            headers={"User-Agent": "Mozilla/5.0 (market-dashboard/1.0)"}, timeout=35,
+        )
+        response.raise_for_status()
+        for item in response.json().get("spark", {}).get("result", []):
+            symbol = item.get("symbol")
+            block = (item.get("response") or [{}])[0]
+            timestamps = block.get("timestamp") or []
+            quote = ((block.get("indicators") or {}).get("quote") or [{}])[0]
+            if not symbol or not timestamps:
+                continue
+            size = len(timestamps)
+            def values(name: str) -> list:
+                raw = list(quote.get(name) or [])[:size]
+                return raw + [np.nan] * (size - len(raw))
+            frame = pd.DataFrame({
+                "Date": pd.to_datetime(timestamps, unit="s", utc=True).tz_localize(None),
+                "Open": values("open"), "High": values("high"),
+                "Low": values("low"), "Close": values("close"),
+                "Volume": values("volume"),
+            }).dropna(subset=["Date", "Close"])
+            frame["Volume"] = frame["Volume"].fillna(0)
+            output[symbol] = frame
+    except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
+        return {}
+    return output
+
+
 @st.cache_data(ttl=21600, show_spinner=False)
 def fred_series(series_id: str, value_name: str) -> pd.DataFrame:
     """Read a public FRED CSV and normalize it to Date/value columns."""
@@ -417,8 +452,8 @@ def ret(df, periods):
     return (df["Close"].iloc[-1] / df["Close"].iloc[-periods-1] - 1) * 100 if len(df) > periods else np.nan
 
 
-def analyze(symbol: str) -> dict:
-    raw = prices(symbol)
+def analyze(symbol: str, supplied: pd.DataFrame | None = None) -> dict:
+    raw = supplied if supplied is not None and not supplied.empty else prices(symbol)
     if raw.empty: return {"error": "暫無行情", "symbol": symbol}
     df = indicators(raw); last = df.iloc[-1]; recent = df.tail(60)
     flow = (df["Close"].pct_change() * df["Volume"]).tail(20).sum() / (df["Volume"].tail(20).sum() or np.nan) * 100
@@ -930,7 +965,24 @@ if SCENARIO_VIEW == "commodities":
     st.stop()
 
 with st.spinner("同步行情與總經資料……"):
-    imf_macro,macro_error=imf_data(); stockq_macro,stockq_error=stockq_data(); mm_export,mm_export_note=macromicro_export_data(); macro=combine_macro_sources(imf_macro,stockq_macro,mm_export); index_data={m:analyze(c["index"]) for m,c in MARKETS.items()}; etf_data={m:analyze(c["etf"]) for m,c in MARKETS.items()}; factor_data={name:analyze(cfg["symbol"]) for name,cfg in GLOBAL_FACTORS.items()}; commodity_data={name:analyze(cfg["symbol"]) for name,cfg in COMMODITY_ASSETS.items()}
+    imf_macro,macro_error=imf_data(); stockq_macro,stockq_error=stockq_data(); mm_export,mm_export_note=macromicro_export_data(); macro=combine_macro_sources(imf_macro,stockq_macro,mm_export)
+    index_frames=batch_prices(tuple(c["index"] for c in MARKETS.values()))
+    taiwan_official=twse_index_prices()
+    if not taiwan_official.empty:
+        taiwan_batch=index_frames.get("^TWII",pd.DataFrame())
+        if not taiwan_batch.empty:
+            taiwan_batch=taiwan_batch.copy(); taiwan_official=taiwan_official.copy()
+            taiwan_batch["Date"]=pd.to_datetime(taiwan_batch["Date"],errors="coerce").dt.normalize()
+            taiwan_official["Date"]=pd.to_datetime(taiwan_official["Date"],errors="coerce").dt.normalize()
+            taiwan_official=pd.concat([taiwan_batch,taiwan_official],ignore_index=True).drop_duplicates("Date",keep="last").sort_values("Date")
+        index_frames["^TWII"]=taiwan_official
+    etf_frames=batch_prices(tuple(c["etf"] for c in MARKETS.values()))
+    factor_frames=batch_prices(tuple(c["symbol"] for c in GLOBAL_FACTORS.values()))
+    commodity_frames=batch_prices(tuple(c["symbol"] for c in COMMODITY_ASSETS.values()))
+    index_data={m:analyze(c["index"],index_frames.get(c["index"])) for m,c in MARKETS.items()}
+    etf_data={m:analyze(c["etf"],etf_frames.get(c["etf"])) for m,c in MARKETS.items()}
+    factor_data={name:analyze(cfg["symbol"],factor_frames.get(cfg["symbol"])) for name,cfg in GLOBAL_FACTORS.items()}
+    commodity_data={name:analyze(cfg["symbol"],commodity_frames.get(cfg["symbol"])) for name,cfg in COMMODITY_ASSETS.items()}
 official_vol=official_market_volatility()
 market_volatility={
     market:realized_volatility_proxy(index_data[market],f"{market}指數20日實現波動率","Yahoo Finance指數行情代理")
