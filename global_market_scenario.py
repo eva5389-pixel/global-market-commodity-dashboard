@@ -246,13 +246,13 @@ def prices(symbol: str, period="2y") -> pd.DataFrame:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def batch_prices(symbols: tuple[str, ...], period: str = "2y") -> dict[str, pd.DataFrame]:
+def batch_prices(symbols: tuple[str, ...], period: str = "2y", interval: str = "1d") -> dict[str, pd.DataFrame]:
     """Fetch a symbol group in one Yahoo Spark request to avoid per-IP bursts."""
     output: dict[str, pd.DataFrame] = {}
     try:
         response = requests.get(
             "https://query1.finance.yahoo.com/v7/finance/spark",
-            params={"symbols": ",".join(symbols), "range": period, "interval": "1d"},
+            params={"symbols": ",".join(symbols), "range": period, "interval": interval},
             headers={"User-Agent": "Mozilla/5.0 (market-dashboard/1.0)"}, timeout=35,
         )
         response.raise_for_status()
@@ -267,8 +267,9 @@ def batch_prices(symbols: tuple[str, ...], period: str = "2y") -> dict[str, pd.D
             def values(name: str) -> list:
                 raw = list(quote.get(name) or [])[:size]
                 return raw + [np.nan] * (size - len(raw))
+            timezone = (block.get("meta") or {}).get("exchangeTimezoneName", "UTC")
             frame = pd.DataFrame({
-                "Date": pd.to_datetime(timestamps, unit="s", utc=True).tz_localize(None),
+                "Date": pd.to_datetime(timestamps, unit="s", utc=True).tz_convert(timezone).tz_localize(None),
                 "Open": values("open"), "High": values("high"),
                 "Low": values("low"), "Close": values("close"),
                 "Volume": values("volume"),
@@ -278,6 +279,20 @@ def batch_prices(symbols: tuple[str, ...], period: str = "2y") -> dict[str, pd.D
     except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
         return {}
     return output
+
+
+def merge_intraday_session(daily: pd.DataFrame, intraday: pd.DataFrame | None) -> pd.DataFrame:
+    """Append the newest exchange-local intraday session to daily history."""
+    if daily is None or daily.empty or intraday is None or intraday.empty:
+        return daily
+    recent=intraday.copy().dropna(subset=["Date","Close"])
+    recent["Date"]=pd.to_datetime(recent["Date"]).dt.normalize()
+    recent=recent.groupby("Date",as_index=False).agg(
+        Open=("Open","first"),High=("High","max"),Low=("Low","min"),
+        Close=("Close","last"),Volume=("Volume","sum"),
+    ).tail(1)
+    base=daily.copy(); base["Date"]=pd.to_datetime(base["Date"]).dt.normalize()
+    return pd.concat([base,recent],ignore_index=True).drop_duplicates("Date",keep="last").sort_values("Date")
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
@@ -966,7 +981,10 @@ if SCENARIO_VIEW == "commodities":
 
 with st.spinner("同步行情與總經資料……"):
     imf_macro,macro_error=imf_data(); stockq_macro,stockq_error=stockq_data(); mm_export,mm_export_note=macromicro_export_data(); macro=combine_macro_sources(imf_macro,stockq_macro,mm_export)
-    index_frames=batch_prices(tuple(c["index"] for c in MARKETS.values()))
+    index_symbols=tuple(c["index"] for c in MARKETS.values())
+    index_frames=batch_prices(index_symbols)
+    intraday_frames=batch_prices(index_symbols,"5d","15m")
+    index_frames={symbol:merge_intraday_session(frame,intraday_frames.get(symbol)) for symbol,frame in index_frames.items()}
     taiwan_official=twse_index_prices()
     if not taiwan_official.empty:
         taiwan_batch=index_frames.get("^TWII",pd.DataFrame())
