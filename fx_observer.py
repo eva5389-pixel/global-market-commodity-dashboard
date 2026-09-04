@@ -4,8 +4,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import streamlit as st
+import altair as alt
 
-from fx_data_sources import fetch_fx_public_data
+from fx_data_sources import fetch_fx_market_history, fetch_fx_public_data
 
 
 STANCE_SCORE = {"偏鷹（抑制通膨／阻貶）": 3.0, "中性": 0.0, "偏鴿（支持景氣／寬鬆）": -3.0}
@@ -217,6 +218,49 @@ def render_cny_observer(us_yield: float, usd_month_change: float) -> None:
     _render_result("人民幣", "人民幣偏強＝USD/CNY偏向下行；離岸CNH通常波動較大。", rows)
 
 
+def render_fx_change_chart() -> None:
+    st.header("主要匯率變動圖")
+    st.caption("全部換算為所選期間起點＝0%，方便比較不同報價尺度。將游標移至線上可查看單日與區間漲跌及方向解讀。")
+    controls = st.container(horizontal=True, vertical_alignment="bottom")
+    with controls:
+        period_label = st.segmented_control("觀察期間", ["1個月", "3個月", "6個月", "1年"], default="6個月")
+        selected = st.multiselect(
+            "顯示匯率", ["美元／台幣", "美元指數", "美元／日圓", "美元／人民幣"],
+            default=["美元／台幣", "美元指數", "美元／日圓", "美元／人民幣"],
+        )
+    periods = {"1個月": "1mo", "3個月": "3mo", "6個月": "6mo", "1年": "1y"}
+    history = fetch_fx_market_history(periods.get(period_label or "6個月", "6mo"))
+    history = history.loc[history["匯率"].isin(selected)] if selected else history.iloc[0:0]
+    if history.empty:
+        st.warning("匯率歷史資料目前無法取得，稍後可按『清除快取並更新』重新抓取。")
+        return
+    nearest = alt.selection_point(nearest=True, on="pointerover", fields=["日期"], empty=False)
+    base = alt.Chart(history).encode(
+        x=alt.X("日期:T", title="日期"),
+        color=alt.Color("匯率:N", title="匯率"),
+    )
+    lines = base.mark_line(strokeWidth=2.5).encode(
+        y=alt.Y("區間漲跌%:Q", title="相對起點漲跌幅（%）"),
+    )
+    points = base.mark_circle(size=85).encode(
+        y="區間漲跌%:Q",
+        opacity=alt.condition(nearest, alt.value(1), alt.value(0)),
+        tooltip=[
+            alt.Tooltip("日期:T", title="日期", format="%Y-%m-%d"),
+            alt.Tooltip("匯率:N", title="匯率"),
+            alt.Tooltip("收盤價:Q", title="收盤價", format=",.4f"),
+            alt.Tooltip("單日漲跌%:Q", title="單日漲跌", format="+.2f"),
+            alt.Tooltip("區間漲跌%:Q", title="區間漲跌", format="+.2f"),
+            alt.Tooltip("變動解讀:N", title="漲跌幅因子"),
+        ],
+    ).add_params(nearest)
+    rule = alt.Chart(history).mark_rule(color="#9ca3af").encode(
+        x="日期:T", opacity=alt.condition(nearest, alt.value(0.45), alt.value(0))
+    ).transform_filter(nearest)
+    st.altair_chart((lines + points + rule).properties(height=430).interactive(bind_y=False), width="stretch")
+    st.caption("報價方向：USD/TWD、USD/JPY、USD/CNY 上漲代表美元升值、相對貨幣貶值；美元指數上漲代表美元對一籃子貨幣走強。來源：Yahoo Finance，快取30分鐘。")
+
+
 def render_fx_observers(us_yield: float, usd_month_change: float, foreign_flow: float, live_dates: dict[str, str] | None = None) -> None:
     st.header("主要匯率觀察")
     twd_tab, usd_tab, jpy_tab, cny_tab = st.tabs(["🇹🇼 台幣", "🇺🇸 美元", "🇯🇵 日圓", "🇨🇳 人民幣"])
@@ -228,3 +272,4 @@ def render_fx_observers(us_yield: float, usd_month_change: float, foreign_flow: 
         render_jpy_observer(us_yield, usd_month_change)
     with cny_tab:
         render_cny_observer(us_yield, usd_month_change)
+    render_fx_change_chart()

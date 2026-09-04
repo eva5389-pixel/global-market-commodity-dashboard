@@ -22,6 +22,13 @@ URLS = {
     "fed": "https://www.federalreserve.gov/economy-at-a-glance-policy-rate.htm",
 }
 
+FX_SYMBOLS = {
+    "美元／台幣": "TWD=X",
+    "美元指數": "DX-Y.NYB",
+    "美元／日圓": "JPY=X",
+    "美元／人民幣": "CNY=X",
+}
+
 
 def _get_text(url: str) -> str:
     """Fetch HTML, retrying known government TLS chains without verification."""
@@ -91,6 +98,53 @@ def _fred_yoy(series_id: str) -> tuple[float, str]:
     latest = frame.iloc[-1]
     base = frame.iloc[-13]
     return (float((latest["value"] / base["value"] - 1) * 100), str(latest["DATE"])[:7])
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_fx_market_history(period: str = "6mo") -> pd.DataFrame:
+    """Fetch daily FX closes from Yahoo's crumb-free chart endpoint."""
+    frames = []
+    for label, symbol in FX_SYMBOLS.items():
+        encoded = requests.utils.quote(symbol, safe="")
+        for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+            try:
+                response = requests.get(
+                    f"https://{host}/v8/finance/chart/{encoded}",
+                    params={"range": period, "interval": "1d", "events": "history"},
+                    headers=HEADERS,
+                    timeout=20,
+                )
+                response.raise_for_status()
+                result = response.json()["chart"]["result"][0]
+                close = result["indicators"]["quote"][0]["close"]
+                frame = pd.DataFrame({
+                    "日期": pd.to_datetime(result["timestamp"], unit="s", utc=True).tz_localize(None),
+                    "匯率": label,
+                    "收盤價": close,
+                }).dropna(subset=["收盤價"])
+                if not frame.empty:
+                    frames.append(frame)
+                    break
+            except (KeyError, IndexError, TypeError, requests.RequestException):
+                continue
+    if not frames:
+        return pd.DataFrame(columns=["日期", "匯率", "收盤價", "單日漲跌%", "區間漲跌%", "變動解讀"])
+    data = pd.concat(frames, ignore_index=True).sort_values(["匯率", "日期"])
+    grouped = data.groupby("匯率", group_keys=False)["收盤價"]
+    data["單日漲跌%"] = grouped.pct_change() * 100
+    data["區間漲跌%"] = grouped.transform(lambda values: (values / values.iloc[0] - 1) * 100)
+    interpretations = {
+        "美元／台幣": ("台幣貶值壓力", "台幣升值動能"),
+        "美元指數": ("美元整體偏強", "美元整體偏弱"),
+        "美元／日圓": ("日圓貶值壓力", "日圓升值動能"),
+        "美元／人民幣": ("人民幣貶值壓力", "人民幣升值動能"),
+    }
+    data["變動解讀"] = data.apply(
+        lambda row: interpretations[row["匯率"]][0] if row["單日漲跌%"] > 0
+        else interpretations[row["匯率"]][1] if row["單日漲跌%"] < 0 else "持平",
+        axis=1,
+    )
+    return data
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
