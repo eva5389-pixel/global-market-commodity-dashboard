@@ -735,17 +735,21 @@ def semiconductor_derating(market: str, factors: dict, rate_bps: float, weights:
 
 
 def flow_table(etf_data: dict) -> pd.DataFrame:
-    valid={m:s for m,s in etf_data.items() if "error" not in s and pd.notna(s.get("flow"))}
-    denominator=sum(abs(s["flow"]) for s in valid.values()) or np.nan
+    signals={}
+    for market,s in etf_data.items():
+        flow=s.get("flow",np.nan); momentum=s.get("m1",np.nan)
+        if pd.notna(flow): signals[market]=(float(flow),"成交量加權")
+        elif pd.notna(momentum): signals[market]=(float(momentum)/21,"價格動能代理")
+    denominator=sum(abs(value) for value,_ in signals.values()) or np.nan
     rows=[]
     for market,s in etf_data.items():
-        value=s.get("flow",np.nan)
+        value,method=signals.get(market,(np.nan,"無可用資料"))
         if pd.isna(value): direction="資料不足"; strength=np.nan; signed=np.nan
         else:
             direction="🟢 流入" if value>0.01 else "🔴 流出" if value<-0.01 else "⚪ 中性"
             strength=abs(value)/denominator*100 if pd.notna(denominator) else 0
             signed=np.sign(value)*strength
-        rows.append({"市場":market,"ETF":MARKETS[market]["etf"],"判讀":direction,"資金強度占比%":strength,"淨方向比例%":signed,"量價流向值%":value,"1M報酬%":s.get("m1"),"日期":s.get("date")})
+        rows.append({"市場":market,"ETF":MARKETS[market]["etf"],"判讀":direction,"資料層級":method,"資金強度占比%":strength,"淨方向比例%":signed,"量價流向值%":value,"1M報酬%":s.get("m1"),"日期":s.get("date")})
     return pd.DataFrame(rows)
 
 
@@ -1127,7 +1131,7 @@ with tabs[3]:
     st.subheader("ETF價量資金流代理"); flows=flow_table(etf_data); st.dataframe(flows,hide_index=True,width="stretch")
     inflow=flows.loc[flows["判讀"].eq("🟢 流入"),"資金強度占比%"].sum(); outflow=flows.loc[flows["判讀"].eq("🔴 流出"),"資金強度占比%"].sum()
     f1,f2=st.columns(2); f1.metric("流入訊號占比",f"{inflow:.1f}%"); f2.metric("流出訊號占比",f"{outflow:.1f}%")
-    st.info("量價流向＝近20日每日報酬×成交量的加權方向。資金強度占比是各市場絕對訊號的相對比例；正值標示流入、負值標示流出，不等同ETF實際申購／贖回金額。")
+    st.info("優先使用近20日每日報酬×成交量的加權方向；Yahoo暫未回傳成交量時，自動改用1M價格動能的日均值並標示『價格動能代理』。資金強度是各市場訊號的相對占比，不等同ETF實際申購／贖回金額。")
     st.subheader("台灣現貨三大法人｜TWSE"); st.dataframe(cash,hide_index=True,width="stretch") if not cash.empty else st.info(cash_date); st.caption(f"資料日：{cash_date}")
     st.subheader("台股期貨法人淨未平倉｜TAIFEX"); st.dataframe(futures,hide_index=True,width="stretch") if not futures.empty else st.info(futures_date); st.caption(f"資料日：{futures_date}；正值偏多、負值偏空，但不代表單一法人策略。")
 
