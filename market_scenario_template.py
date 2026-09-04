@@ -798,8 +798,11 @@ with tabs[0]:
         factor_score,factor_notes=global_factor_adjustment(market,local_factors,factor_weights)
         semi_score,semi_pressure=semiconductor_derating(market,local_factors,rate,factor_weights)
         export_score,export_growth=export_factor_score(market,macro,export_weight)
-        total=np.clip(s["technical"]*.45+macro_score(market,macro)*.30+12.5+preset["bias"].get(market,0)+stock*.35-max(rate,0)/50+min(rate,0)/-100+np.clip(e.get("flow",0),-5,5)+chip+factor_score+semi_score+export_score,0,100)
-        rows.append({"市場":market,"日期":s["date"],"指數":s["close"],"日漲跌%":s["day"],"1M%":s["m1"],"3M%":s["m3"],"價量":s["價量判讀"],"技術階段":s["階段判讀"],"技術分":s["technical"],"總經分":macro_score(market,macro),"最新出口成長%":export_growth,"出口敏感係數":EXPORT_SENSITIVITY.get(market),"出口因子分":export_score,"全球因子分":factor_score,"半導體去估值分":semi_score,"去估值壓力":semi_pressure,"ETF流向代理":e.get("flow"),"情境總分":total,"結論":verdict(total),"因子解讀":"；".join(factor_notes)})
+        etf_signal=e.get("flow",np.nan)
+        etf_method="成交量加權"
+        if pd.isna(etf_signal): etf_signal=(e.get("m1",np.nan)/21 if pd.notna(e.get("m1",np.nan)) else 0.0); etf_method="價格動能代理"
+        total=np.clip(s["technical"]*.45+macro_score(market,macro)*.30+12.5+preset["bias"].get(market,0)+stock*.35-max(rate,0)/50+min(rate,0)/-100+np.clip(etf_signal,-5,5)+chip+factor_score+semi_score+export_score,0,100)
+        rows.append({"市場":market,"日期":s["date"],"指數":s["close"],"日漲跌%":s["day"],"1M%":s["m1"],"3M%":s["m3"],"價量":s["價量判讀"],"技術階段":s["階段判讀"],"技術分":s["technical"],"總經分":macro_score(market,macro),"最新出口成長%":export_growth,"出口敏感係數":EXPORT_SENSITIVITY.get(market),"出口因子分":export_score,"全球因子分":factor_score,"半導體去估值分":semi_score,"去估值壓力":semi_pressure,"ETF流向代理":etf_signal,"ETF資料層級":etf_method,"情境總分":total,"結論":verdict(total),"因子解讀":"；".join(factor_notes)})
     ranking=pd.DataFrame(rows)
     if "情境總分" in ranking.columns: ranking=ranking.sort_values("情境總分",ascending=False,na_position="last")
     st.subheader(f"情境：{scenario_name}｜利率 {rate:+d}bps｜股票 {stock:+d}%｜債券 {bond:+d}%")
