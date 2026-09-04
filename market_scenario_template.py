@@ -965,6 +965,10 @@ with tabs[7]:
     usd_month_change = factor_data.get("美元指數", {}).get("m1", 0.0)
     foreign_rows = cash.loc[cash["法人"].astype(str).str.contains("外資", na=False)] if not cash.empty else pd.DataFrame()
     foreign_flow = foreign_rows["買賣超億元"].sum() if not foreign_rows.empty else 0.0
-    render_fx_observers(us_yield, usd_month_change, foreign_flow)
+    render_fx_observers(us_yield, usd_month_change, foreign_flow, {
+        "us_yield": factor_data.get("美國10年債殖利率", {}).get("date", "最新交易日"),
+        "usd": factor_data.get("美元指數", {}).get("date", "最新交易日"),
+        "foreign": cash_date,
+    })
 
 st.caption(f"產生時間：{datetime.now():%Y-%m-%d %H:%M:%S}｜行情與法人快取30分鐘、IMF快取6小時")

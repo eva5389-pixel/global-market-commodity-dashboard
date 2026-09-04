@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from fx_data_sources import fetch_fx_public_data
+
 
 STANCE_SCORE = {"偏鷹（抑制通膨／阻貶）": 3.0, "中性": 0.0, "偏鴿（支持景氣／寬鬆）": -3.0}
 
@@ -30,27 +32,38 @@ def calculate_twd_score(values: dict[str, float | str]) -> pd.DataFrame:
     return frame
 
 
-def render_twd_observer(us_yield: float, usd_month_change: float, foreign_flow: float) -> None:
+def render_twd_observer(
+    us_yield: float,
+    usd_month_change: float,
+    foreign_flow: float,
+    live_dates: dict[str, str] | None = None,
+) -> None:
     st.header("台幣匯率觀察模板")
     st.caption("正分代表台幣升值壓力，負分代表台幣貶值壓力；這是方向模型，不是匯價點位預測。")
+
+    public = fetch_fx_public_data()
+    live_dates = live_dates or {}
+    automatic = st.toggle("自動載入最新公開資料", value=True, help="欄位仍可直接修改；修改後按下更新匯率判讀。")
+    if automatic:
+        st.success(f"已載入公開資料；本次檢查日期：{public['fetched_at']['period']}。各指標發布頻率不同，請以表格中的資料日期為準。")
 
     with st.form("twd_fx_observer"):
         a, b, c, d = st.columns(4)
         with a:
             us_rate = st.number_input("美國利率／10年債殖利率 %", value=float(round(us_yield, 2)), step=0.05)
-            tw_rate = st.number_input("台灣政策利率 %", value=2.00, step=0.05)
+            tw_rate = st.number_input("台灣政策利率 %", value=float(public["tw_rate"]["value"] if automatic else 2.0), step=0.05)
         with b:
-            m1b = st.number_input("台灣 M1B 年增率 %", value=4.0, step=0.1)
-            m2 = st.number_input("台灣 M2 年增率 %", value=5.0, step=0.1)
+            m1b = st.number_input("台灣 M1B 年增率 %", value=float(public["m1b"]["value"] if automatic else 4.0), step=0.1)
+            m2 = st.number_input("台灣 M2 年增率 %", value=float(public["m2"]["value"] if automatic else 5.0), step=0.1)
         with c:
-            tw_exports = st.number_input("台灣出口年增率 %", value=10.0, step=0.5)
-            export_orders = st.number_input("台灣外銷訂單年增率 %", value=8.0, step=0.5)
-            kr_exports = st.number_input("韓國出口年增率 %", value=6.0, step=0.5)
+            tw_exports = st.number_input("台灣出口年增率 %", value=float(public["tw_exports"]["value"] if automatic else 10.0), step=0.5)
+            export_orders = st.number_input("台灣外銷訂單年增率 %", value=float(public["tw_orders"]["value"] if automatic else 8.0), step=0.5)
+            kr_exports = st.number_input("韓國出口年增率 %", value=float(public["kr_exports"]["value"] if automatic else 6.0), step=0.5)
         with d:
             foreign = st.number_input("外資台股買賣超（億元）", value=float(round(foreign_flow, 1)), step=10.0)
             usd_change = st.number_input("美元指數近1月變動 %", value=float(round(usd_month_change, 2)), step=0.1)
-            tw_stance = st.selectbox("台灣央行態度", list(STANCE_SCORE), index=1)
-            fed_stance = st.selectbox("Fed態度", list(STANCE_SCORE), index=1)
+            tw_stance = st.selectbox("台灣央行態度", list(STANCE_SCORE), index=list(STANCE_SCORE).index(str(public["tw_stance"]["value"])) if automatic else 1)
+            fed_stance = st.selectbox("Fed態度", list(STANCE_SCORE), index=list(STANCE_SCORE).index(str(public["fed_stance"]["value"])) if automatic else 1)
         submitted = st.form_submit_button("更新匯率判讀", type="primary", width="stretch")
 
     values = {
@@ -80,7 +93,26 @@ def render_twd_observer(us_yield: float, usd_month_change: float, foreign_flow: 
         column_config={"台幣方向分": st.column_config.NumberColumn(format="%+.2f")},
         width="stretch",
     )
-    st.caption("自動帶入：美國10年債殖利率、美元指數近1月變動、外資台股買賣超。M1B、M2、出口、外銷訂單、韓國出口與央行態度採手動更新，避免發布頻率不同造成誤判。")
+    sources = [
+        {"指標": "美國10年債殖利率", "目前值": f"{us_yield:.2f}%", "資料日期": live_dates.get("us_yield", "最新交易日"), "來源": "Yahoo Finance／美國公債", "狀態": "自動更新", "連結": "https://finance.yahoo.com/quote/%5ETNX/"},
+        {"指標": "美元指數近1月", "目前值": f"{usd_month_change:+.2f}%", "資料日期": live_dates.get("usd", "最新交易日"), "來源": "Yahoo Finance／ICE美元指數", "狀態": "自動更新", "連結": "https://finance.yahoo.com/quote/DX-Y.NYB/"},
+        {"指標": "外資台股買賣超", "目前值": f"{foreign_flow:+,.1f}億元", "資料日期": live_dates.get("foreign", "最新交易日"), "來源": "臺灣證券交易所", "狀態": "自動更新", "連結": "https://www.twse.com.tw/zh/trading/foreign/bfi82u.html"},
+    ]
+    labels = {
+        "tw_rate": "台灣政策利率", "m1b": "台灣 M1B 年增率", "m2": "台灣 M2 年增率",
+        "tw_exports": "台灣出口年增率", "tw_orders": "台灣外銷訂單年增率", "kr_exports": "韓國出口年增率",
+        "tw_stance": "台灣央行態度", "fed_stance": "Fed態度",
+    }
+    for key, label_text in labels.items():
+        item = public[key]
+        suffix = "%" if key not in {"tw_stance", "fed_stance"} else ""
+        sources.append({"指標": label_text, "目前值": f"{item['value']}{suffix}", "資料日期": item["period"], "來源": item["source"], "狀態": item["status"], "連結": item["url"]})
+    st.subheader("資料來源與更新日期")
+    st.dataframe(
+        pd.DataFrame(sources), hide_index=True, width="stretch",
+        column_config={"連結": st.column_config.LinkColumn("官方／原始資料連結", display_text="開啟來源 ↗")},
+    )
+    st.caption("自動值會快取 6 小時。『最新已核對值』代表官方網站阻擋雲端程式存取，系統保留最近一次核對資料並附上官方連結；所有欄位仍可手動覆寫。")
 
 
 def _render_result(currency: str, quote_note: str, rows: list[tuple[str, float, str]]) -> None:
@@ -185,11 +217,11 @@ def render_cny_observer(us_yield: float, usd_month_change: float) -> None:
     _render_result("人民幣", "人民幣偏強＝USD/CNY偏向下行；離岸CNH通常波動較大。", rows)
 
 
-def render_fx_observers(us_yield: float, usd_month_change: float, foreign_flow: float) -> None:
+def render_fx_observers(us_yield: float, usd_month_change: float, foreign_flow: float, live_dates: dict[str, str] | None = None) -> None:
     st.header("主要匯率觀察")
     twd_tab, usd_tab, jpy_tab, cny_tab = st.tabs(["🇹🇼 台幣", "🇺🇸 美元", "🇯🇵 日圓", "🇨🇳 人民幣"])
     with twd_tab:
-        render_twd_observer(us_yield, usd_month_change, foreign_flow)
+        render_twd_observer(us_yield, usd_month_change, foreign_flow, live_dates)
     with usd_tab:
         render_usd_observer(usd_month_change)
     with jpy_tab:
