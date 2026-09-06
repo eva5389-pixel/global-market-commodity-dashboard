@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 import altair as alt
 import numpy as np
-import time
 import json
 import re
 from pathlib import Path
@@ -272,7 +271,8 @@ with st.sidebar:
     st.markdown("- 費城半導體：`^SOX`")
     
     st.divider()
-    auto_refresh = st.checkbox("⚡ 啟用盤中即時自動跳動 (每5秒)", value=True)
+    refresh_now = st.button("立即更新行情", icon=":material/refresh:", width="stretch")
+    st.caption("為避免長頁面每5秒重跑而無法操作，改採手動更新；行情分析仍保留15秒快取。")
     st.divider()
     show_diag = st.checkbox("🎯 多空診斷面板", True)
     show_tech = st.checkbox("📈 技術主圖 (四價量 K線 & MA20)", True)
@@ -281,6 +281,9 @@ with st.sidebar:
     show_sub = st.checkbox("📊 KD/MACD 指標 (含鈍化點)", True)
     show_chip = st.checkbox("🔄 籌碼換手與吸籌分析", True)
     show_psy_inst = st.checkbox("🧠 心理線與三大法人進出", True)
+
+if refresh_now:
+    get_full_analysis.clear()
 
 df, fib_levels = get_full_analysis(ticker, range_val)
 
@@ -303,7 +306,7 @@ if df is not None:
 
     st.markdown(f"## 📈 `{ticker}` 股票查詢與智慧多空回測")
     now_str = datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
-    st.success(f"🚀 數據即時同步成功！ | ⏳ 盤中動態同步時間：{now_str} (每 5 秒自動重新整理)")
+    st.success(f"數據同步完成｜更新時間：{now_str}｜需要新行情時請按左側「立即更新行情」")
 
     st.markdown("### 📋 今日最新盤中即時關鍵數據摘要")
     c_open, c_high, c_low, c_live = st.columns(4)
@@ -373,7 +376,7 @@ if df is not None:
         interactive_tech_chart = chart_layers.properties(height=480).interactive()
         chart_col, legend_col = st.columns([5, 1])
         with chart_col:
-            st.altair_chart(interactive_tech_chart, use_container_width=True)
+            st.altair_chart(interactive_tech_chart, width="stretch")
         with legend_col:
             st.markdown("#### K 線顏色意義")
             st.markdown(
@@ -406,7 +409,7 @@ if df is not None:
         )
         
         kd_chart = alt.layer(k_line, d_line, kd_points).properties(height=180, title="KD 指標 (紅點表高檔鈍化>80，綠點表低檔鈍化<20)").interactive()
-        st.altair_chart(kd_chart, use_container_width=True)
+        st.altair_chart(kd_chart, width="stretch")
         
         macd_base = alt.Chart(plot_df).encode(x=shared_x)
         macd_hist = macd_base.mark_bar().encode(
@@ -416,7 +419,7 @@ if df is not None:
         macd_line = macd_base.mark_line(color="#4dabf7").encode(y="MACD:Q")
         signal_line = macd_base.mark_line(color="#fcc419").encode(y="Signal:Q")
         macd_chart = alt.layer(macd_hist, macd_line, signal_line).properties(height=180, title="MACD 動能柱").interactive()
-        st.altair_chart(macd_chart, use_container_width=True)
+        st.altair_chart(macd_chart, width="stretch")
 
     # --- D. 籌碼換手與分析 ---
     if show_chip:
@@ -428,7 +431,7 @@ if df is not None:
                 y=alt.Y("Vol_Ratio:Q", title="換手率 (倍數)"),
                 color=alt.condition(alt.datum.Vol_Ratio > 1.2, alt.value("#fcc419"), alt.value("#4dabf7"))
             ).properties(height=200).interactive()
-            st.altair_chart(chip_chart, use_container_width=True)
+            st.altair_chart(chip_chart, width="stretch")
         with cc2:
             latest_vol = curr["Vol_Ratio"]
             chip_phase,chip_reason=classify_chip_phase(df)
@@ -445,7 +448,7 @@ if df is not None:
             {"狀態":"📤 出貨","判讀重點":"相對高檔、跌日量增或量價資金方向轉負"},
             {"狀態":"🧹 洗盤","判讀重點":"仍守均線、短線回檔並出現較高換手"},
             {"狀態":"🚀 拉貨","判讀重點":"站上均線、價格加速、均線上彎且資金方向為正"},
-        ]),hide_index=True,use_container_width=True)
+        ]),hide_index=True,width="stretch")
         st.caption("這是價格與成交量的代理判讀，不能識別特定主力帳戶；應搭配趨勢、法人與基本面使用。")
 
     # --- E. 心理線與三大法人進出（置於頁面最下方） ---
@@ -469,7 +472,7 @@ if df is not None:
                 height=220,
                 title="12 期心理線（75 以上偏熱、25 以下偏冷）",
             ).interactive(),
-            use_container_width=True,
+            width="stretch",
         )
         st.caption("心理線＝最近 12 個交易單位中收盤上漲次數 ÷ 12 × 100；會隨行情資料自動重算。")
 
@@ -499,17 +502,12 @@ if df is not None:
                     alt.Tooltip("買賣超千股:Q", format=",.0f"),
                 ],
             ).properties(height=280).interactive()
-            st.altair_chart(inst_chart, use_container_width=True)
+            st.altair_chart(inst_chart, width="stretch")
             latest_inst_date = inst_df["Date"].max().strftime("%Y-%m-%d")
             scope_text = "全市場加總" if ticker.upper().strip() == "^TWII" else ticker.upper().strip()
             st.caption(f"資料來源：臺灣證券交易所 T86｜範圍：{scope_text}｜最新資料日：{latest_inst_date}｜正值為買超、負值為賣超。")
         else:
             st.info(inst_message or "目前尚無可用的三大法人資料；休市日或證交所尚未公布時，會保留至下一次自動更新再抓取。")
-
-    # ⚡ 盤中自動重新整理機制 (每 5 秒觸發一次)
-    if auto_refresh:
-        time.sleep(5)
-        st.rerun()
 
 else:
     st.error("⚠️ 資料讀取失敗，請確認代碼是否正確。")
