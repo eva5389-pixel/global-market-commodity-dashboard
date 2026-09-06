@@ -309,8 +309,9 @@ def merge_intraday_session(daily: pd.DataFrame, intraday: pd.DataFrame | None) -
 @st.cache_data(ttl=21600, show_spinner=False)
 def fred_series(series_id: str, value_name: str) -> pd.DataFrame:
     """Read a public FRED CSV and normalize it to Date/value columns."""
-    url=f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-    response=requests.get(url,timeout=30,headers={"User-Agent":"market-research-dashboard/1.0"})
+    url="https://fred.stlouisfed.org/graph/fredgraph.csv"
+    start=(pd.Timestamp.now().normalize()-pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+    response=requests.get(url,params={"id":series_id,"cosd":start},timeout=15,headers={"User-Agent":"market-research-dashboard/1.0"})
     response.raise_for_status()
     frame=pd.read_csv(StringIO(response.text))
     if len(frame.columns)<2: return pd.DataFrame()
@@ -341,9 +342,48 @@ def wti_spot_price() -> pd.DataFrame:
     legacy XLS workbook, which is not always available on Streamlit Cloud.
     The underlying DCOILWTICO observations are still sourced from EIA.
     """
-    raw=fred_series("DCOILWTICO","現貨")
-    if raw.empty:
-        raise ValueError("FRED/EIA WTI spot series returned no observations")
+    start=(pd.Timestamp.now().normalize()-pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+    try:
+        response=requests.get(
+            "https://api.eia.gov/v2/petroleum/pri/spt/data/",
+            params={
+                "api_key":"DEMO_KEY","frequency":"daily","data[0]":"value",
+                "facets[series][]":"RWTC","start":start,
+                "sort[0][column]":"period","sort[0][direction]":"asc","length":1200,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        rows=response.json().get("response",{}).get("data",[])
+        raw=pd.DataFrame(rows).rename(columns={"period":"Date","value":"現貨"})
+        raw["Date"]=pd.to_datetime(raw["Date"],errors="coerce")
+        raw["現貨"]=pd.to_numeric(raw["現貨"],errors="coerce")
+        raw=raw.dropna(subset=["Date","現貨"])[["Date","現貨"]].drop_duplicates("Date").sort_values("Date")
+        if not raw.empty:
+            raw.attrs["source"]="EIA 官方 Open Data API"
+            return raw
+    except Exception:
+        pass
+    try:
+        raw=fred_series("DCOILWTICO","現貨")
+        if not raw.empty:
+            raw.attrs["source"]="EIA（由 FRED CSV 提供）"
+            return raw
+    except Exception:
+        pass
+    # EIA's official workbook is retained as a second route. It is attempted
+    # only after the lightweight CSV fails, so a slow FRED response no longer
+    # leaves the entire section blank indefinitely.
+    url="https://www.eia.gov/dnav/pet/hist_xls/RWTCd.xls"
+    response=requests.get(url,timeout=15,headers={"User-Agent":"Mozilla/5.0"})
+    response.raise_for_status()
+    raw=pd.read_excel(BytesIO(response.content),sheet_name="Data 1",skiprows=2)
+    raw=raw.iloc[:,:2].copy(); raw.columns=["Date","現貨"]
+    raw["Date"]=pd.to_datetime(raw["Date"],errors="coerce")
+    raw["現貨"]=pd.to_numeric(raw["現貨"],errors="coerce")
+    raw=raw.dropna().sort_values("Date")
+    if raw.empty: raise ValueError("EIA WTI spot workbook returned no observations")
+    raw.attrs["source"]="EIA 官方歷史檔"
     return raw
 
 
@@ -934,15 +974,18 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
     spread_choice=st.radio("商品",["WTI 原油","黃金"],horizontal=True,key=f"spread_choice_{SCENARIO_VIEW}")
     if spread_choice=="WTI 原油":
         try:
-            spot=wti_spot_price()
+            with st.spinner("正在載入 WTI 期貨與現貨資料…"):
+                spot=wti_spot_price()
             spread=futures_spot_spread(commodity_data["西德州原油期貨"]["df"],spot,"現貨")
             if spread.empty: st.info("WTI 期貨與現貨日期目前無法對齊。")
             else:
                 st.altair_chart(spread_chart(spread,"WTI 近月期貨－Cushing 現貨價差（美元／桶）"),width="stretch")
-                latest=spread.iloc[-1]; st.caption(f"最新價差 {latest['價差']:+.2f} 美元／桶（{latest['價差率%']:+.2f}%）。正值通常為期貨溢價，負值通常為現貨溢價；近月連續合約換月時可能出現跳動。資料：Yahoo Finance、EIA（由 FRED 提供）。")
+                latest=spread.iloc[-1]; spot_source=spot.attrs.get("source","EIA")
+                st.caption(f"最新價差 {latest['價差']:+.2f} 美元／桶（{latest['價差率%']:+.2f}%）。正值通常為期貨溢價，負值通常為現貨溢價；近月連續合約換月時可能出現跳動。資料：Yahoo Finance、{spot_source}。")
                 st.link_button("查看 EIA／FRED WTI 現貨原始資料","https://fred.stlouisfed.org/series/DCOILWTICO")
         except Exception:
             st.info("WTI 期現貨價差暫時無法更新，請稍後重新整理。")
+            st.link_button("直接查看 EIA WTI 現貨資料","https://www.eia.gov/dnav/pet/hist/rwtcd.htm")
     else:
         try:
             spot,spot_note=gold_spot_proxy()
