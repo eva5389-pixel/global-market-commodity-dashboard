@@ -1,9 +1,12 @@
 """Japan rate, yen and carry-trade risk monitor."""
 from __future__ import annotations
 
+from io import StringIO
+
 import altair as alt
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 
@@ -16,6 +19,56 @@ MARKET_SYMBOLS = {
     "日本出口股ETF": "1625.T",
     "VIX": "^VIX",
 }
+
+
+def _fred_rate(series_id: str, column: str, timeout: int = 12) -> pd.DataFrame:
+    start_date = (pd.Timestamp.now().normalize() - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+    response = requests.get(
+        "https://fred.stlouisfed.org/graph/fredgraph.csv",
+        params={"id": series_id, "cosd": start_date},
+        headers={"User-Agent": "global-market-dashboard/1.0"},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    frame = pd.read_csv(StringIO(response.text))
+    frame.columns = ["日期", column]
+    frame["日期"] = pd.to_datetime(frame["日期"], errors="coerce")
+    frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame.dropna().sort_values("日期")
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def fetch_us_japan_daily_spread(japan_policy_rate: float) -> pd.DataFrame:
+    """Daily US effective rate less Japan overnight-rate observation.
+
+    Japan's free OECD/FRED series is monthly, so its latest observation is
+    carried forward onto each US daily observation and identified in the UI.
+    """
+    end_date = pd.Timestamp.now().normalize()
+    start_date = end_date - pd.DateOffset(years=2)
+    response = requests.get(
+        "https://markets.newyorkfed.org/api/rates/unsecured/effr/search.json",
+        params={"startDate": start_date.strftime("%Y-%m-%d"), "endDate": end_date.strftime("%Y-%m-%d"), "type": "rate"},
+        headers={"User-Agent": "global-market-dashboard/1.0"},
+        timeout=25,
+    )
+    response.raise_for_status()
+    records = response.json().get("refRates", [])
+    us = pd.DataFrame(records).rename(columns={"effectiveDate": "日期", "percentRate": "美國有效聯邦基金利率%"})
+    us["日期"] = pd.to_datetime(us["日期"], errors="coerce")
+    us["美國有效聯邦基金利率%"] = pd.to_numeric(us["美國有效聯邦基金利率%"], errors="coerce")
+    us = us.dropna(subset=["日期", "美國有效聯邦基金利率%"]).sort_values("日期")
+    try:
+        japan = _fred_rate("IRSTCI01JPM156N", "日本隔夜拆款利率%", timeout=8)
+        merged = pd.merge_asof(us, japan, on="日期", direction="backward").dropna()
+        merged["日本資料方式"] = "OECD／FRED月頻前值延續"
+    except Exception:
+        merged = us.copy()
+        merged["日本隔夜拆款利率%"] = float(japan_policy_rate)
+        merged["日本資料方式"] = "使用頁面輸入的日本政策利率"
+    merged["美日每日利差%"] = merged["美國有效聯邦基金利率%"] - merged["日本隔夜拆款利率%"]
+    merged["利差日變動bps"] = merged["美日每日利差%"].diff() * 100
+    return merged
 
 
 @st.cache_data(ttl=1800, max_entries=8, show_spinner=False)
@@ -114,6 +167,49 @@ def render_jpy_carry_dashboard(default_us_rate: float = 4.0, default_dxy_change:
         st.warning("平倉風險升高，市場可能從出口股、高估值科技與高息貨幣，轉向日本銀行、內需或低槓桿資產。")
     else:
         st.info("目前模型未顯示全面性平倉壓力，但日銀政策意外或日圓急升仍可能快速改變風險。")
+
+    st.subheader("每日美日利差")
+    try:
+        daily_spread = fetch_us_japan_daily_spread(jp_rate)
+        if daily_spread.empty:
+            st.info("每日美日利差目前沒有可顯示資料。")
+        else:
+            latest_spread = daily_spread.iloc[-1]
+            prior_spread = daily_spread.iloc[-2] if len(daily_spread) > 1 else latest_spread
+            st.metric(
+                "最新美日隔夜利差",
+                f"{latest_spread['美日每日利差%']:.3f}%",
+                f"{(latest_spread['美日每日利差%'] - prior_spread['美日每日利差%']) * 100:+.1f} bps（日變動）",
+                border=True,
+            )
+            hover = alt.selection_point(nearest=True, on="pointerover", fields=["日期"], empty=False)
+            base = alt.Chart(daily_spread.tail(370)).encode(x=alt.X("日期:T", title="日期"))
+            spread_line = base.mark_line(color="#38bdf8", strokeWidth=2.5).encode(
+                y=alt.Y("美日每日利差%:Q", title="美國－日本利差（百分點）", scale=alt.Scale(zero=False))
+            )
+            spread_points = base.mark_circle(color="#f59e0b", size=90).encode(
+                y="美日每日利差%:Q",
+                opacity=alt.condition(hover, alt.value(1), alt.value(0)),
+                tooltip=[
+                    alt.Tooltip("日期:T", format="%Y-%m-%d"),
+                    alt.Tooltip("美國有效聯邦基金利率%:Q", format=".3f"),
+                    alt.Tooltip("日本隔夜拆款利率%:Q", format=".3f"),
+                    alt.Tooltip("美日每日利差%:Q", format=".3f"),
+                    alt.Tooltip("利差日變動bps:Q", format="+.1f"),
+                    alt.Tooltip("日本資料方式:N"),
+                ],
+            ).add_params(hover)
+            st.altair_chart((spread_line + spread_points).properties(height=340).interactive(bind_y=False), width="stretch")
+            st.caption(
+                "美國採紐約聯準銀行每日 EFFR；日本優先採 OECD／FRED 月度隔夜拆款利率並以前值延續，"
+                "FRED逾時時改採頁面輸入的日本政策利率。日內利差變化主要來自美國端；利差下降代表 carry 報酬空間收斂。"
+            )
+            st.markdown(
+                "[紐約聯準銀行 EFFR](https://www.newyorkfed.org/markets/reference-rates/effr)｜"
+                "[FRED 日本隔夜拆款利率](https://fred.stlouisfed.org/series/IRSTCI01JPM156N)"
+            )
+    except Exception:
+        st.info("每日美日利差暫時無法更新，請稍後重新整理。")
 
     st.subheader("風險因子拆解")
     st.bar_chart(risk_detail, x="風險因子", y="風險分", horizontal=True)
