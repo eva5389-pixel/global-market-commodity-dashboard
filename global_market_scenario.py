@@ -334,15 +334,16 @@ def oil_inventory() -> pd.DataFrame:
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def wti_spot_price() -> pd.DataFrame:
-    """EIA daily Cushing WTI spot price in dollars per barrel."""
-    url="https://www.eia.gov/dnav/pet/hist_xls/RWTCd.xls"
-    response=requests.get(url,timeout=35,headers={"User-Agent":"Mozilla/5.0"})
-    response.raise_for_status()
-    raw=pd.read_excel(BytesIO(response.content),sheet_name="Data 1",skiprows=2)
-    raw=raw.iloc[:,:2].copy(); raw.columns=["Date","現貨"]
-    raw["Date"]=pd.to_datetime(raw["Date"],errors="coerce")
-    raw["現貨"]=pd.to_numeric(raw["現貨"],errors="coerce")
-    return raw.dropna().sort_values("Date")
+    """EIA daily Cushing WTI spot price, distributed through FRED.
+
+    FRED's CSV avoids the optional ``xlrd`` dependency required by EIA's
+    legacy XLS workbook, which is not always available on Streamlit Cloud.
+    The underlying DCOILWTICO observations are still sourced from EIA.
+    """
+    raw=fred_series("DCOILWTICO","現貨")
+    if raw.empty:
+        raise ValueError("FRED/EIA WTI spot series returned no observations")
+    return raw
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -942,8 +943,10 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
             if spread.empty: st.info("WTI 期貨與現貨日期目前無法對齊。")
             else:
                 st.altair_chart(spread_chart(spread,"WTI 近月期貨－Cushing 現貨價差（美元／桶）"),width="stretch")
-                latest=spread.iloc[-1]; st.caption(f"最新價差 {latest['價差']:+.2f} 美元／桶（{latest['價差率%']:+.2f}%）。正值通常為期貨溢價，負值通常為現貨溢價；近月連續合約換月時可能出現跳動。資料：Yahoo Finance、EIA。")
-        except Exception as exc: st.info(f"WTI 期現貨價差暫時無法更新（{type(exc).__name__}）。")
+                latest=spread.iloc[-1]; st.caption(f"最新價差 {latest['價差']:+.2f} 美元／桶（{latest['價差率%']:+.2f}%）。正值通常為期貨溢價，負值通常為現貨溢價；近月連續合約換月時可能出現跳動。資料：Yahoo Finance、EIA（由 FRED 提供）。")
+                st.link_button("查看 EIA／FRED WTI 現貨原始資料","https://fred.stlouisfed.org/series/DCOILWTICO")
+        except Exception:
+            st.info("WTI 期現貨價差暫時無法更新，請稍後重新整理。")
     else:
         try:
             spot,spot_note=gold_spot_proxy()
