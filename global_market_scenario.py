@@ -106,6 +106,15 @@ def num(value, default=np.nan):
         return default
 
 
+def display_number(value, format_spec: str = ",.2f", suffix: str = "", missing: str = "資料不足") -> str:
+    """Format a numeric value without leaking NaN/None into the user interface."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return missing
+    return f"{numeric:{format_spec}}{suffix}" if np.isfinite(numeric) else missing
+
+
 def twse_index_prices() -> pd.DataFrame:
     """Official TAIEX fallback when Yahoo throttles Streamlit Cloud."""
     rows = []
@@ -403,10 +412,18 @@ def futures_spot_spread(futures: pd.DataFrame, spot: pd.DataFrame, spot_col: str
 
 
 def indicators(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy(); close = out["Close"]
+    out = df.copy(); close = pd.to_numeric(out["Close"], errors="coerce")
+    # Some index feeds publish close-only rows. Use close as the neutral OHLC
+    # fallback so price-based indicators remain available, while keeping a
+    # missing/zero Volume explicit instead of inventing turnover.
+    for column in ("Open", "High", "Low"):
+        out[column] = pd.to_numeric(out[column], errors="coerce").fillna(close)
+    out["Volume"] = pd.to_numeric(out["Volume"], errors="coerce").fillna(0)
     for n in (20, 60, 200): out[f"MA{n}"] = close.rolling(n).mean()
     delta = close.diff(); gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean(); loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
-    out["RSI14"] = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
+    rsi = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
+    rsi = rsi.mask((loss == 0) & (gain > 0), 100).mask((gain == 0) & (loss > 0), 0).mask((gain == 0) & (loss == 0), 50)
+    out["RSI14"] = rsi
     out["MACD"] = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     out["MACD_SIGNAL"] = out["MACD"].ewm(span=9, adjust=False).mean(); out["MACD_HIST"] = out["MACD"] - out["MACD_SIGNAL"]
     low9=out["Low"].rolling(9).min(); high9=out["High"].rolling(9).max(); rsv=(close-low9)/(high9-low9).replace(0,np.nan)*100
@@ -460,7 +477,8 @@ def technical_diagnosis(df: pd.DataFrame) -> dict:
         chip_reason=f"20日漲跌{m20:+.1f}%、區間振幅{range_pct:.1f}%，價格未過度追高且量價資金方向為正"
     else:
         chip_phase="⚪ 籌碼結構穩定"
-        chip_reason=f"換手{vol_ratio:.2f}倍、20日漲跌{m20:+.1f}%；四種典型訊號尚未同時成立"
+        turnover_text=display_number(vol_ratio, ".2f", "倍", "無成交量資料")
+        chip_reason=f"換手{turnover_text}、20日漲跌{m20:+.1f}%；四種典型訊號尚未同時成立"
     return {"價量判讀":pv,"KD判讀":f"{kd_cross}／{kd_zone}","MACD判讀":macd,"階段判讀":phase,"籌碼判讀":chip_phase,"籌碼理由":chip_reason,"換手強度":vol_ratio,"換手資金方向%":turnover_flow,"20日振幅%":range_pct}
 
 
@@ -1067,10 +1085,10 @@ with tabs[1]:
         st.markdown(f"### {technical_market}｜{MARKETS[technical_market]['index']} 技術分析｜資料日 {s['date']}")
         render_metric_grid([
             ("指數",f"{s['close']:,.2f}",f"{s['day']:+.2f}%"),
-            ("量／20日均量",f"{s['volume_ratio']:.2f}x",None),
-            ("RSI14",f"{s['rsi']:.1f}",None),
-            ("支撐",f"{s['support']:,.2f}",None),
-            ("壓力",f"{s['resistance']:,.2f}",None),
+            ("量／20日均量",display_number(s["volume_ratio"], ".2f", "x", "無成交量資料"),None),
+            ("RSI14",display_number(s["rsi"], ".1f"),None),
+            ("支撐",display_number(s["support"]),None),
+            ("壓力",display_number(s["resistance"]),None),
         ])
         render_metric_grid([
             ("價量狀態",s["價量判讀"],None),
@@ -1086,7 +1104,12 @@ with tabs[1]:
             st.markdown(f"### {s['籌碼判讀']}")
             st.write(s["籌碼理由"])
             st.caption("此為指數成交量／換手代理判讀，不代表可識別特定主力帳戶。")
-        st.caption(f"支撐／壓力採近60日低高價10%／90%分位；ATR14={s['atr']:,.2f}。換手強度={s['換手強度']:.2f}倍、20日振幅={s['20日振幅%']:.2f}%。")
+        st.caption(
+            "支撐／壓力採近60日低高價10%／90%分位；"
+            f"ATR14={display_number(s['atr'])}。"
+            f"換手強度={display_number(s['換手強度'], '.2f', '倍', '無成交量資料')}、"
+            f"20日振幅={display_number(s['20日振幅%'], '.2f', '%')}。"
+        )
         overview=pd.DataFrame([{"市場":m,"價量判讀":v.get("價量判讀"),"KD判讀":v.get("KD判讀"),"MACD判讀":v.get("MACD判讀"),"階段判讀":v.get("階段判讀"),"籌碼判讀":v.get("籌碼判讀"),"換手強度":v.get("換手強度"),"技術分":v.get("technical")} for m,v in index_data.items() if "error" not in v])
         st.subheader("全球主要市場技術線判讀"); st.dataframe(overview,hide_index=True,width="stretch")
 
