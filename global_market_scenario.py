@@ -324,14 +324,22 @@ def fred_series(series_id: str, value_name: str) -> pd.DataFrame:
 @st.cache_data(ttl=21600, show_spinner=False)
 def oil_inventory() -> pd.DataFrame:
     """EIA weekly U.S. commercial crude stocks excluding the SPR."""
-    url="https://www.eia.gov/dnav/pet/hist_xls/WCESTUS1w.xls"
-    response=requests.get(url,timeout=35,headers={"User-Agent":"Mozilla/5.0"})
+    start=(pd.Timestamp.now().normalize()-pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+    response=requests.get(
+        "https://api.eia.gov/v2/petroleum/stoc/wstk/data/",
+        params={
+            "api_key":"DEMO_KEY","frequency":"weekly","data[0]":"value",
+            "facets[series][]":"WCESTUS1","start":start,
+            "sort[0][column]":"period","sort[0][direction]":"asc","length":200,
+        },
+        timeout=20,
+    )
     response.raise_for_status()
-    raw=pd.read_excel(BytesIO(response.content),sheet_name="Data 1",skiprows=2)
-    raw=raw.iloc[:,:2].copy(); raw.columns=["Date","庫存量"]
+    rows=response.json().get("response",{}).get("data",[])
+    raw=pd.DataFrame(rows).rename(columns={"period":"Date","value":"庫存量"})
     raw["Date"]=pd.to_datetime(raw["Date"],errors="coerce")
     raw["庫存量"]=pd.to_numeric(raw["庫存量"],errors="coerce")/1000
-    return raw.dropna().sort_values("Date")
+    return raw.dropna(subset=["Date","庫存量"])[["Date","庫存量"]].drop_duplicates("Date").sort_values("Date")
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
@@ -408,7 +416,7 @@ def gold_inventory_snapshot() -> tuple[pd.DataFrame, str]:
     """Fetch CME's current COMEX depository report; never substitute ETF holdings."""
     url="https://www.cmegroup.com/delivery_reports/Gold_Stocks.xls"
     try:
-        response=requests.get(url,timeout=30,headers={"User-Agent":"Mozilla/5.0","Referer":"https://www.cmegroup.com/"})
+        response=requests.get(url,timeout=10,headers={"User-Agent":"Mozilla/5.0","Referer":"https://www.cmegroup.com/"})
         response.raise_for_status()
         raw=pd.read_excel(BytesIO(response.content),header=None)
         text=raw.fillna("").astype(str)
@@ -423,11 +431,11 @@ def gold_inventory_snapshot() -> tuple[pd.DataFrame, str]:
     except Exception as cme_exc:
         try:
             headers={"User-Agent":"Mozilla/5.0","X-Requested-With":"XMLHttpRequest"}
-            token_response=requests.get("https://metalcharts.org/api/security/token",headers=headers,timeout=20)
+            token_response=requests.get("https://metalcharts.org/api/security/token",headers=headers,timeout=8)
             token_response.raise_for_status(); token=token_response.json()["token"]
             response=requests.get(
                 "https://metalcharts.org/api/comex/inventory?symbol=XAU&range=1Y",
-                headers={**headers,"X-MC-Token":token},timeout=25
+                headers={**headers,"X-MC-Token":token},timeout=12
             )
             response.raise_for_status(); payload=response.json()
             raw=pd.DataFrame(payload.get("data",[]))
@@ -998,17 +1006,19 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
         except Exception as exc: st.info(f"黃金期現貨代理價差暫時無法更新（{type(exc).__name__}）。")
 
     st.markdown("### 庫存量")
-    inv_gold,inv_note=gold_inventory_snapshot()
     inv_col1,inv_col2=st.columns(2)
     with inv_col1:
         try:
-            oil_inv=oil_inventory()
+            with st.spinner("正在載入 EIA 原油庫存…"):
+                oil_inv=oil_inventory()
             st.altair_chart(inventory_chart(oil_inv,"美國商業原油庫存（不含 SPR）"),width="stretch")
             if not oil_inv.empty:
                 last=oil_inv.iloc[-1]; change=last["庫存量"]-oil_inv.iloc[-2]["庫存量"] if len(oil_inv)>1 else np.nan
                 st.caption(f"{last['Date']:%Y-%m-%d}：{last['庫存量']:,.1f} 百萬桶，週變動 {change:+,.1f} 百萬桶。資料：EIA。")
         except Exception as exc: st.info(f"EIA 原油庫存暫時無法更新（{type(exc).__name__}）。")
     with inv_col2:
+        with st.spinner("正在載入 COMEX 黃金庫存…"):
+            inv_gold,inv_note=gold_inventory_snapshot()
         if inv_gold.empty:
             st.info(inv_note)
             st.link_button("查看 CME 金屬庫存官方報告","https://www.cmegroup.com/solutions/clearing/operations-and-deliveries/nymex-delivery-notices.html")
