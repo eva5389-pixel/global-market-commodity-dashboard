@@ -779,9 +779,7 @@ def line_chart(df, show_fibonacci: bool=False):
     latest=df.tail(1).assign(線型="最新日線",價格=lambda x:x["Close"])
     point=alt.Chart(latest).mark_point(size=115,filled=True,color="#ff4b4b").encode(x="Date:T",y="價格:Q",tooltip=[alt.Tooltip("Date:T",title="資料日期"),alt.Tooltip("價格:Q",title="最新日線價",format=",.2f")])
     layers=[lines,point]
-    fib_toggle=None
     if show_fibonacci:
-        fib_toggle=alt.selection_point(name="fib_toggle",fields=["控制"],on="click",toggle=True,empty=False)
         window=df.tail(260); high=float(window["High"].max()); low=float(window["Low"].min()); span=high-low
         fib=pd.DataFrame([
             {"Date":window["Date"].max(),"比例":label,"價格":high-ratio*span,"控制":"費波那契"}
@@ -789,20 +787,12 @@ def line_chart(df, show_fibonacci: bool=False):
         ])
         fib["右側標籤"]=fib.apply(lambda row:f"{row['比例']}｜{row['價格']:,.2f}",axis=1)
         rules=alt.Chart(fib).mark_rule(color="#f59e0b",strokeDash=[6,4]).encode(
-            y="價格:Q",opacity=alt.condition(fib_toggle,alt.value(.9),alt.value(0)),tooltip=["比例:N",alt.Tooltip("價格:Q",format=",.2f")]
+            y="價格:Q",opacity=alt.value(.9),tooltip=["比例:N",alt.Tooltip("價格:Q",format=",.2f")]
         )
         labels=alt.Chart(fib).mark_text(align="right",dx=-6,dy=-5,color="#f59e0b",fontSize=11,fontWeight="bold").encode(
-            x="Date:T",y="價格:Q",text=alt.Text("右側標籤:N"),opacity=alt.condition(fib_toggle,alt.value(1),alt.value(0))
+            x="Date:T",y="價格:Q",text=alt.Text("右側標籤:N")
         )
-        control=alt.Chart(pd.DataFrame({"控制":["費波那契"]})).mark_text(
-            align="left",baseline="top",fontSize=14,fontWeight="bold",cursor="pointer"
-        ).encode(
-            x=alt.value(8),y=alt.value(8),
-            text=alt.condition(fib_toggle,alt.value("☑ 顯示費波那契支撐壓力"),alt.value("☐ 顯示費波那契支撐壓力")),
-            color=alt.condition(fib_toggle,alt.value("#f59e0b"),alt.value("#9ca3af")),
-            tooltip=alt.value("點一下顯示或隱藏費波那契線")
-        ).add_params(fib_toggle)
-        layers.extend([rules,labels,control])
+        layers.extend([rules,labels])
     chart=alt.layer(*layers).properties(height=380,title="價格與均線").interactive()
     return chart
 
@@ -930,7 +920,12 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
         ("1個月",f"{selected_data['m1']:+.2f}%",None),("3個月",f"{selected_data['m3']:+.2f}%",None),
         ("情境分",f"{scenario_score:.1f}",verdict(scenario_score)),("技術階段",selected_data["階段判讀"],None),
     ])
-    st.altair_chart(line_chart(selected_data["df"],show_fibonacci=True),width="stretch")
+    show_commodity_levels=st.toggle(
+        "顯示費波那契支撐／壓力",
+        value=False,
+        key=f"commodity_fibonacci_{SCENARIO_VIEW}_{selected_asset}",
+    )
+    st.altair_chart(line_chart(selected_data["df"],show_fibonacci=show_commodity_levels),width="stretch")
     st.altair_chart(price_volume_chart(selected_data["df"]),width="stretch")
     st.caption(f"{scenario_note}。資料屬性：{cfg['type']}。紅柱為收高、綠柱為收低；指數若未提供成交量會顯示空值。DAX『農金』依 DAXglobal Agribusiness（農業企業）解讀。")
 
@@ -1100,7 +1095,12 @@ with tabs[1]:
             ("型態階段",s["階段判讀"],None),
             ("籌碼階段",s["籌碼判讀"],None),
         ])
-        st.altair_chart(line_chart(s["df"]),width="stretch"); kd_chart,macd_chart=oscillator_charts(s["df"]); c1,c2=st.columns(2); c1.altair_chart(kd_chart,width="stretch"); c2.altair_chart(macd_chart,width="stretch")
+        show_market_levels=st.toggle(
+            "顯示費波那契支撐／壓力",
+            value=False,
+            key=f"market_fibonacci_{technical_market}",
+        )
+        st.altair_chart(line_chart(s["df"],show_fibonacci=show_market_levels),width="stretch"); kd_chart,macd_chart=oscillator_charts(s["df"]); c1,c2=st.columns(2); c1.altair_chart(kd_chart,width="stretch"); c2.altair_chart(macd_chart,width="stretch")
         tc1,tc2=st.columns([2,1]); tc1.altair_chart(turnover_chart(s["df"]),width="stretch")
         with tc2:
             st.subheader("籌碼面診斷分析")
