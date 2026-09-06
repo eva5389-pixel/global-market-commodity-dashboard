@@ -20,6 +20,7 @@ import streamlit as st
 import yfinance as yf
 
 from fx_observer import render_fx_observers
+from jpy_carry_dashboard import render_jpy_carry_dashboard
 
 st.set_page_config(page_title="全球市場情境評估", page_icon="🌏", layout="wide")
 SCENARIO_VIEW = globals().get("scenario_view", "markets")
@@ -1014,7 +1015,7 @@ market_volatility["台灣"]=official_vol.get("台灣") if "error" not in officia
 market_volatility["日本"]=official_vol.get("日本") if "error" not in official_vol.get("日本",{"error":1}) else market_volatility["日本"]
 market_volatility["韓國"]={**factor_data["VIX恐慌指數"],"name":"US VIX（依指定）","source":"CBOE行情／Yahoo Finance","proxy":False}
 cash,cash_date=twse_flow(); futures,futures_date=taifex_positions()
-tabs=st.tabs(["🏁 市場結論","📈 價量技術","🌍 全球因子","💧 資金流／法人","🌐 IMF總經","🏭 產業評估","🪙 黃金／石油","🧮 方法","💱 匯率觀察"])
+tabs=st.tabs(["🏁 市場結論","📈 價量技術","🌍 全球因子","💧 資金流／法人","🌐 IMF總經","🏭 產業評估","🪙 黃金／石油","🧮 方法","💱 匯率觀察","🇯🇵 日圓／OIS／Carry"])
 
 with tabs[0]:
     rows=[]; cash_total=cash["買賣超億元"].sum() if not cash.empty else 0; foreign_oi=futures.loc[futures["法人"].astype(str).str.contains("外資"),"淨未平倉口數"].sum() if not futures.empty else 0
@@ -1205,5 +1206,11 @@ with tabs[8]:
         "usd": factor_data.get("美元指數", {}).get("date", "最新交易日"),
         "foreign": cash_date,
     })
+
+with tabs[9]:
+    render_jpy_carry_dashboard(
+        factor_data.get("美國10年債殖利率", {}).get("close", 4.0),
+        factor_data.get("美元指數", {}).get("m1", 0.0),
+    )
 
 st.caption(f"產生時間：{datetime.now():%Y-%m-%d %H:%M:%S}｜行情與法人快取30分鐘、IMF快取6小時")
