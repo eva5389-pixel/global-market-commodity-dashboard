@@ -13,6 +13,10 @@ COT_MARKETS = {
     "Nasdaq 100": ("NASDAQ-100 Consolidated - CHICAGO MERCANTILE EXCHANGE", "淨多代表科技股偏多"),
     "美元指數": ("USD INDEX - ICE FUTURES U.S.", "淨多代表美元偏強"),
     "日圓": ("JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE", "淨多代表日圓偏強"),
+    "日經平均（美元計價）": ("NIKKEI STOCK AVERAGE - CHICAGO MERCANTILE EXCHANGE", "美元計價日經期貨；淨多代表日股偏多"),
+    "日經平均（日圓計價）": ("NIKKEI STOCK AVERAGE YEN DENOM - CHICAGO MERCANTILE EXCHANGE", "日圓計價日經期貨；可與美元計價合約比較匯率影響"),
+    "MSCI EAFE": ("MSCI EAFE - ICE FUTURES U.S.", "歐洲、澳洲及遠東已開發市場綜合部位，不等同純亞洲"),
+    "MSCI Emerging Markets": ("MSCI EM INDEX - ICE FUTURES U.S.", "新興市場綜合部位，可作亞洲新興市場風險偏好代理"),
     "黃金": ("GOLD - COMMODITY EXCHANGE INC.", "淨多代表黃金偏多"),
     "WTI原油": ("CRUDE OIL, LIGHT SWEET-WTI - ICE FUTURES EUROPE", "淨多代表油價偏多；使用ICE WTI合約"),
     "美國10年債": ("UST 10Y NOTE - CHICAGO BOARD OF TRADE", "淨多代表債券價格偏多、殖利率偏降"),
@@ -94,9 +98,9 @@ def render_cot_dashboard() -> None:
     latest = history.groupby("資產", as_index=False).tail(1).copy()
     latest["市場狀況"] = latest.apply(lambda row: _signal(row["三年百分位%"], row["淨部位週變化"]), axis=1)
     latest["解讀"] = latest["資產"].map({label: note for label, (_, note) in COT_MARKETS.items()})
-    latest = latest.sort_values("三年百分位%", ascending=False)
-
     newest = latest["日期"].max()
+    latest["資料新鮮度"] = np.where((newest-latest["日期"]).dt.days <= 14, "✅ 最新週期", "⚠️ 舊資料／低頻申報")
+    latest = latest.sort_values("三年百分位%", ascending=False)
     bullish = int((latest["三年百分位%"] >= 60).sum())
     bearish = int((latest["三年百分位%"] <= 40).sum())
     crowded = int(((latest["三年百分位%"] >= 80) | (latest["三年百分位%"] <= 20)).sum())
@@ -108,7 +112,7 @@ def render_cot_dashboard() -> None:
 
     st.subheader("主要市場最新部位")
     st.dataframe(
-        latest[["資產", "日期", "非商業淨部位", "淨部位週變化", "非商業淨部位/OI%", "三年百分位%", "市場狀況", "解讀"]],
+        latest[["資產", "日期", "資料新鮮度", "非商業淨部位", "淨部位週變化", "非商業淨部位/OI%", "三年百分位%", "市場狀況", "解讀"]],
         hide_index=True, width="stretch",
         column_config={
             "日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
