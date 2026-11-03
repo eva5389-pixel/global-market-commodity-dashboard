@@ -6,7 +6,7 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import requests
-import streamlit as st
+from word_export import st
 
 
 BLSSERIES = {

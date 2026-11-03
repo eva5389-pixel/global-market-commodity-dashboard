@@ -1,4 +1,5 @@
-import streamlit as st
+from word_export import st, begin_report, render_download
+begin_report()
 import yfinance as yf
 import pandas as pd
 import altair as alt
@@ -43,7 +44,10 @@ if app_page in {"亞洲市場情境評估", "全球市場情境評估", "黃金�
     scenario_code = scenario_code.replace(
         f'st.set_page_config(page_title="{page_config_title}", page_icon="🌏", layout="wide")', ""
     )
-    exec(compile(scenario_code, str(scenario_file), "exec"), globals(), globals())
+    try:
+        exec(compile(scenario_code, str(scenario_file), "exec"), globals(), globals())
+    finally:
+        render_download(app_page)
     st.stop()
 
 # ==========================================
@@ -511,3 +515,5 @@ if df is not None:
 
 else:
     st.error("⚠️ 資料讀取失敗，請確認代碼是否正確。")
+
+render_download(app_page)

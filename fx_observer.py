@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import streamlit as st
+from word_export import st
 import altair as alt
 
 from fx_data_sources import fetch_fx_market_history, fetch_fx_public_data

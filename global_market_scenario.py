@@ -16,7 +16,7 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import requests
-import streamlit as st
+from word_export import st
 import yfinance as yf
 
 from fx_observer import render_fx_observers
